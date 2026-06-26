@@ -1,0 +1,31 @@
+fp:
+  components:
+    - Core::Gecko Profiler
+    - "DevTools::Performance Tools (Profiler/Timeline)"
+    - "Firefox Profiler::*"
+
+fxp:
+  components:
+    - Testing::AWSY
+    - Testing::mozperftest
+    - Testing::Performance
+    - Testing::Raptor
+    - Testing::Talos
+    - Testing::Condprofile
+    - Tree Management::Perfherder
+    - Tree Management::Treeherder
+    - "Tree Management::Treeherder: API"
+    - "Tree Management::Treeherder: Frontend"
+    - Core::Gecko Profiler
+    - "DevTools::Performance Tools (Profiler/Timeline)"
+
+fxpe:
+  components:
+    - "Core::Performance Engineering"
+
+pcf:
+  components:
+    - Testing::PerfCompare
+
+sp3:
+  components: []

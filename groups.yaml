@@ -1,0 +1,15 @@
+# Named tag groups — shortcuts for `--group NAME` in jbi.py and make_report.py.
+# Each group maps to a display name + the list of whiteboard tags it expands to.
+# (A bare list, `name: [tag, ...]`, is also accepted; the key is then the label.)
+perf:
+  name: Performance
+  tags: [fp, fxp, fxpe, pcf]
+genai:
+  name: GenAI
+  tags: [aife, aimodels, aiplatform, aiact, aiasst, aiaug, aidisc]
+fide:
+  name: Firefox Desktop
+  tags: [fidedi, fidefe, proton, fidefe-acq]
+deng:
+  name: Data Engineering
+  tags: [dataplatform, dataquality, fog-migration, glean-sdk-jira]

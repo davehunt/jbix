@@ -1,0 +1,11 @@
+# Example assignee map. Copy to `assignee_map.yaml` (gitignored) and fill in real entries.
+#
+# Maps a Bugzilla account email to the corresponding Jira (work) email used as the
+# assignee. Use `null` when a person has no usable Jira account, so sync skips them
+# instead of falling back to the raw Bugzilla email or a directory lookup.
+#
+# `sync_assignee` consults this map first; unmapped emails fall through to the
+# people.mozilla.org lookup (if PEOPLE_API_TOKEN is set) and then the raw email.
+"person.personal@example.com": "pwork@example.org"
+"contractor@example.net": "cwork@example.org"
+"no-jira-account@example.com": null

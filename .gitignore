@@ -1,0 +1,20 @@
+# Secrets / local config
+.env
+assignee_map.yaml
+
+# Local-only dev notes (agent/AI instructions; kept out of the public repo)
+CLAUDE.md
+
+# Python / tooling
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.coverage
+
+# Generated data & reports (internal — not for publication)
+cache/
+snapshots/
+reports/
+report*.html
+output/
