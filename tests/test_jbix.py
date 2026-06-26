@@ -63,6 +63,11 @@ class TestBuildParser:
         args = parser.parse_args(["--group", "performance", "genai"])
         assert args.group == ["performance", "genai"]
 
+    def test_all_tags_flag(self):
+        parser = jbix_main.build_parser()
+        assert parser.parse_args(["--all-tags"]).all_tags is True
+        assert parser.parse_args(["--tags", "fxp"]).all_tags is False
+
     def test_default_mode_is_check(self):
         parser = jbix_main.build_parser()
         args = parser.parse_args(["--tags", "fxp"])

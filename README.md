@@ -18,6 +18,9 @@ python jbix.py --tags fxp --mode preview
 # Multiple tags
 python jbix.py --tags fxp fxpe --mode preview
 
+# Every whiteboard tag in the JBI config
+python jbix.py --all-tags --mode check
+
 # A named tag group (see groups.yaml) — regenerates the whole reports/ site
 python jbix.py --group perf --mode check
 

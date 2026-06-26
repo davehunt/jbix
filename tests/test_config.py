@@ -125,6 +125,16 @@ class TestGetTagConfig:
         assert result is None
 
 
+class TestAllTags:
+    def test_returns_every_whiteboard_tag_sorted(self):
+        with patch.object(config, "get_config", return_value=SAMPLE_CONFIG):
+            assert config.all_tags() == ["fxp", "fxpe"]
+
+    def test_empty_when_no_config(self):
+        with patch.object(config, "get_config", return_value=[]):
+            assert config.all_tags() == []
+
+
 # ---------------------------------------------------------------------------
 # get_jira_project
 # ---------------------------------------------------------------------------

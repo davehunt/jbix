@@ -117,6 +117,14 @@ def get_tag_config(whiteboard_tag: str) -> dict | None:
     return None
 
 
+def all_tags() -> list[str]:
+    """Every whiteboard tag defined in the JBI config (sorted, de-duplicated)."""
+    return sorted({
+        tag for entry in get_config()
+        if (tag := entry.get("whiteboard_tag"))
+    })
+
+
 def get_jira_project(whiteboard_tag: str) -> str | None:
     """Return the Jira project key for a whiteboard tag, e.g. 'FXP'."""
     entry = get_tag_config(whiteboard_tag)

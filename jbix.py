@@ -46,6 +46,7 @@ from jbix.bugzilla import (
 )
 from jbix.config import CACHE_PATH as JBI_CONFIG_CACHE
 from jbix.config import (
+    all_tags,
     get_enabled_flags,
     get_jira_project,
     get_linked_project_excludes,
@@ -184,8 +185,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--group", nargs="+", metavar="GROUP",
-        help="Tag group(s) from groups.yaml to process (e.g. performance); "
-             "expands to its tags and also writes report_<group>.html",
+        help="Tag group(s) from groups.yaml to process (e.g. perf); "
+             "expands to its tags and also writes reports/<group>.html",
+    )
+    parser.add_argument(
+        "--all-tags", action="store_true", default=False,
+        help="Process every whiteboard tag in the JBI config",
     )
     parser.add_argument(
         "--mode", choices=["preview", "prompt", "apply", "check"], default="check",
@@ -1114,9 +1119,12 @@ def main() -> None:
 
     tags = load_tags()
 
-    run_tags = resolve_tags(args.tags or [], args.group or [])
+    explicit_tags = list(args.tags or [])
+    if args.all_tags:
+        explicit_tags += all_tags()
+    run_tags = resolve_tags(explicit_tags, args.group or [])
     if not run_tags:
-        logger.error("No tags to process — pass --tags and/or --group.")
+        logger.error("No tags to process — pass --tags, --group, and/or --all-tags.")
         sys.exit(1)
 
     # Resolve each tag to its Jira project + effective flags
