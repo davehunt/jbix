@@ -112,6 +112,17 @@ def test_tag_card_has_detail_link_and_no_broken_table():
     assert "fields broken" not in card  # broken table moved to the detail page
 
 
+def test_tag_card_renders_all_drifted_fields():
+    # Any field health records must appear, not just a hard-coded subset.
+    diff = {"total_pairs": 2, "drifted_pairs": 1, "drift_pct": 0.5, "rows": [],
+            "fields": [{"field": "issuetype", "name": "type", "n": 1, "pct": 0.5},
+                       {"field": "remote_links", "name": "remote_links", "n": 1, "pct": 0.5}]}
+    sec = make_report._section("[fxpe] → FXPE", None, None, diff)
+    card = make_report.tag_card("fxpe", sec, None, "tags/fxpe.html")
+    assert "<td>type</td>" in card
+    assert "<td>remote_links</td>" in card
+
+
 def test_drift_detail_table_renders_links_and_values():
     html = make_report._drift_detail_table(_diff_section())
     assert ">111<" in html and "https://bugzil.la/111" in html  # no "bug " prefix

@@ -33,9 +33,6 @@ OUT = str(REPORTS_DIR / "index.html")
 # matches jbix.snapshots._DRIFT_ROWS_CAP (rows are already capped at store time).
 _DRIFT_ROWS_SHOWN = 50
 
-FIELD_NAMES = ["summary", "priority", "assignee", "components", "labels",
-               "status", "resolution", "severity", "issue_links"]
-
 COLORS = {"fp": "#2563eb", "fxp": "#f59e0b", "fxpe": "#10b981",
           "pcf": "#ef4444", "fxdroid": "#8b5cf6", "fidefe": "#ec4899",
           "Totals": "#111827"}
@@ -176,12 +173,11 @@ def tag_card(key, sec, prev, detail_url):
     d = sec["drift"]
     drift_pct = d["pct"] if d else 0.0
     field_rows = ""
-    for f in FIELD_NAMES:
-        fv = sec["fields"].get(f)
-        if not fv:
-            continue
+    # Render every drifted field present, in the order health recorded them
+    # (canonical order then alphabetical) — covers type, remote_links, etc.
+    for f, fv in sec["fields"].items():
         zero = "zero" if fv["out"] == 0 else "nonzero"
-        field_rows += (f'<tr class="{zero}"><td>{f}</td><td class="num">{fmt(fv["out"])}</td>'
+        field_rows += (f'<tr class="{zero}"><td>{html.escape(f)}</td><td class="num">{fmt(fv["out"])}</td>'
                        f'<td class="num">{html.escape(fv["pct"])}</td></tr>')
 
     title = html.escape(sec["title"])
