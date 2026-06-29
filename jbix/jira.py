@@ -123,7 +123,12 @@ class JiraClient:
     def add_remote_link(self, bug: dict, jira: dict, url: str) -> None:
         self._make_update(bug, jira, "remote_links", "", url)
         if self._confirm():
-            self.client.add_remote_link(jira["key"], {"url": url, "title": url})
+            # Use the bug id as the remote link's globalId — the same value JBI uses
+            # (global_id=str(bug.id)) — so this is an idempotent upsert against the
+            # same link object rather than a second, parallel link.
+            self.client.add_remote_link(
+                jira["key"], {"url": url, "title": url}, globalId=str(bug["id"])
+            )
 
     def create_component(self, project_key: str, component_name: str):
         from types import SimpleNamespace

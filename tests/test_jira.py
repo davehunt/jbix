@@ -210,8 +210,9 @@ class TestJiraClientUpdates:
         bug, jira = _make_infos()
         url = "https://bugzil.la/123456"
         j.add_remote_link(bug, jira, url)
+        # globalId = the bug id (matches JBI) → idempotent upsert, not a parallel link
         j.client.add_remote_link.assert_called_once_with(
-            jira["key"], {"url": url, "title": url}
+            jira["key"], {"url": url, "title": url}, globalId="123456"
         )
 
     def test_add_remote_link_skipped_in_log(self):
