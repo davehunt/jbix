@@ -252,6 +252,14 @@ class TestGetEnabledFlags:
         assert "sync_depends_on_links" not in config.STEP_TO_FLAG
         assert "sync_blocks_links" not in config.STEP_TO_FLAG
 
+    def test_issue_type_step_maps_to_flag(self):
+        # JBI's maybe_update_issue_type step (JBI PR #1363) → the 'type' flag.
+        assert config.STEP_TO_FLAG["maybe_update_issue_type"] == "type"
+        cfg = [{"whiteboard_tag": "t",
+                "parameters": {"steps": {"existing": ["maybe_update_issue_type"]}}}]
+        with patch.object(config, "get_config", return_value=cfg):
+            assert config.get_enabled_flags("t") == {"type"}
+
 
 # ---------------------------------------------------------------------------
 # get_mappings

@@ -11,6 +11,7 @@ Step → sync flag mapping:
   maybe_update_issue_resolution → resolution
   maybe_update_issue_priority   → priority
   maybe_update_issue_severity   → severity
+  maybe_update_issue_type       → type
   maybe_update_components       → components
   sync_whiteboard_labels        → whiteboard_labels
   sync_keywords_labels          → keyword_labels
@@ -52,6 +53,7 @@ STEP_TO_FLAG: dict[str, str] = {
     "maybe_update_issue_resolution": "resolution",
     "maybe_update_issue_priority": "priority",
     "maybe_update_issue_severity": "severity",
+    "maybe_update_issue_type": "type",
     "maybe_update_components": "components",
     "sync_whiteboard_labels": "whiteboard_labels",
     "sync_keywords_labels": "keyword_labels",
