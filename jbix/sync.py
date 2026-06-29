@@ -13,7 +13,7 @@ import logging
 import os
 
 from jbix.bugzilla import BugzillaClient
-from jbix.constants import ASSIGNEE_MAP
+from jbix.constants import ASSIGNEE_MAP, DEFAULT_ISSUE_TYPE
 from jbix.jira import JiraClient
 
 logger = logging.getLogger(__name__)
@@ -213,10 +213,11 @@ def sync_resolution(bug_info: dict, jira_info: dict, jira: JiraClient, resolutio
 def sync_issue_type(bug_info: dict, jira_info: dict, jira: JiraClient, issue_type_map: dict) -> None:
     bug_value = bug_info.get("type")
     jira_value = jira_info["issuetype"]
-    mapped = issue_type_map.get(bug_value)
-    if mapped is None:
-        logger.debug(f"[sync_issue_type] No mapping for bug type {bug_value!r}, skipping")
+    if not bug_value:
+        logger.debug("[sync_issue_type] Bug has no type, skipping")
         return
+    # Types not in the map fall back to DEFAULT_ISSUE_TYPE ("Task"), matching JBI.
+    mapped = issue_type_map.get(bug_value, DEFAULT_ISSUE_TYPE)
     if jira_value != mapped:
         jira.update_issue_type(bug_info, jira_info, jira_value, mapped)
 
@@ -553,6 +554,21 @@ def reverse_sync_priority(bug_info: dict, jira_info: dict, bugz: BugzillaClient,
     mapped = reverse_map.get(jira_priority)
     if mapped and jira_priority != "(none)" and bug_priority != mapped:
         bugz.update_priority(bug_info, jira_info, bug_priority, mapped)
+
+
+def reverse_sync_issue_type(bug_info: dict, jira_info: dict, bugz: BugzillaClient, issue_type_map: dict) -> None:
+    """Sync issue type from Jira to Bugzilla when they differ.
+
+    Inverts the forward bug-type → Jira-type map. A many→one forward map inverts
+    last-wins. The forward "Task" fallback for unmapped types is forward-only, so
+    a Jira type with no reverse mapping is skipped (conservative).
+    """
+    bug_type = bug_info.get("type")
+    jira_type = jira_info["issuetype"]
+    reverse_map = {v: k for k, v in issue_type_map.items()}
+    mapped = reverse_map.get(jira_type)
+    if mapped and bug_type != mapped:
+        bugz.update_type(bug_info, jira_info, bug_type, mapped)
 
 
 def reverse_sync_summary(bug_info: dict, jira_info: dict, bugz: BugzillaClient) -> None:

@@ -147,7 +147,7 @@ _LINK_FLAGS_TO_FIELD: dict[str, str | list[str]] = {
 ALL_FLAGS = JBI_FLAGS + EXTENSION_FLAGS
 
 # Fields that support reverse sync (Jira → Bugzilla)
-REVERSE_SUPPORTED: frozenset[str] = frozenset({"assignee", "summary", "priority", "severity", "whiteboard_labels", "keyword_labels"})
+REVERSE_SUPPORTED: frozenset[str] = frozenset({"assignee", "summary", "priority", "severity", "whiteboard_labels", "keyword_labels", "type"})
 
 
 # ---------------------------------------------------------------------------
@@ -1035,6 +1035,8 @@ def run_reverse_sync(
                 sync_fns.reverse_sync_severity(bug_info, jira_info, bugz, mappings["severity_map"])
             if "summary" in active:
                 sync_fns.reverse_sync_summary(bug_info, jira_info, bugz)
+            if "type" in active:
+                sync_fns.reverse_sync_issue_type(bug_info, jira_info, bugz, mappings["issue_type_map"])
             if "whiteboard_labels" in active or "keyword_labels" in active:
                 sync_fns.reverse_sync_whiteboard_labels(bug_info, jira_info, bugz)
 

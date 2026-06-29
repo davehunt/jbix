@@ -7,6 +7,7 @@ import pytest
 from jbix.sync import (
     _whiteboard_as_labels,
     reverse_sync_assignee,
+    reverse_sync_issue_type,
     reverse_sync_priority,
     reverse_sync_severity,
     reverse_sync_summary,
@@ -1720,6 +1721,29 @@ class TestReverseSyncPriority:
         b.update_priority.assert_not_called()
 
 
+class TestReverseSyncIssueType:
+    def test_updates_when_jira_type_differs(self, bug_info, jira_info):
+        b = _make_bugz()
+        bug_info["type"] = "task"
+        jira_info["issuetype"] = "Bug"      # inverts to "defect"
+        reverse_sync_issue_type(bug_info, jira_info, b, ISSUE_TYPE_MAP)
+        b.update_type.assert_called_once_with(bug_info, jira_info, "task", "defect")
+
+    def test_no_update_when_already_matches(self, bug_info, jira_info):
+        b = _make_bugz()
+        bug_info["type"] = "defect"
+        jira_info["issuetype"] = "Bug"
+        reverse_sync_issue_type(bug_info, jira_info, b, ISSUE_TYPE_MAP)
+        b.update_type.assert_not_called()
+
+    def test_skips_when_jira_type_not_in_reverse_map(self, bug_info, jira_info):
+        b = _make_bugz()
+        bug_info["type"] = "defect"
+        jira_info["issuetype"] = "Epic"     # not a value in ISSUE_TYPE_MAP
+        reverse_sync_issue_type(bug_info, jira_info, b, ISSUE_TYPE_MAP)
+        b.update_type.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # reverse_sync_summary
 # ---------------------------------------------------------------------------
@@ -1915,9 +1939,24 @@ class TestSyncIssueType:
         sync_issue_type(bug_info, jira_info, j, ISSUE_TYPE_MAP)
         j.update_issue_type.assert_not_called()
 
-    def test_skips_when_type_not_in_map(self, bug_info, jira_info):
+    def test_defaults_to_task_when_type_not_in_map(self, bug_info, jira_info):
+        # Unmapped bug types fall back to "Task" (matching JBI), not skipped.
         j = _make_jira()
         bug_info["type"] = "enhancement"
+        jira_info["issuetype"] = "Bug"
+        sync_issue_type(bug_info, jira_info, j, ISSUE_TYPE_MAP)
+        j.update_issue_type.assert_called_once_with(bug_info, jira_info, "Bug", "Task")
+
+    def test_no_update_when_unmapped_already_task(self, bug_info, jira_info):
+        j = _make_jira()
+        bug_info["type"] = "enhancement"
+        jira_info["issuetype"] = "Task"
+        sync_issue_type(bug_info, jira_info, j, ISSUE_TYPE_MAP)
+        j.update_issue_type.assert_not_called()
+
+    def test_skips_when_bug_has_no_type(self, bug_info, jira_info):
+        j = _make_jira()
+        bug_info["type"] = None
         jira_info["issuetype"] = "Bug"
         sync_issue_type(bug_info, jira_info, j, ISSUE_TYPE_MAP)
         j.update_issue_type.assert_not_called()

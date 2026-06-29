@@ -197,6 +197,32 @@ class TestBugzillaClientKeywords:
         b.get_valid_keywords()
         assert b.client._backend.bug_fields.call_count == 1
 
+
+# ---------------------------------------------------------------------------
+# BugzillaClient.update_type (reverse issue-type sync)
+# ---------------------------------------------------------------------------
+
+
+class TestBugzillaClientUpdateType:
+    def _bug_jira(self):
+        bug = {"id": 1, "url": "https://bugzil.la/1", "status": "NEW",
+               "product": "P", "component": "C", "type": "task"}
+        jira = {"key": "FXP-1", "url": "https://j/FXP-1", "issuetype": "Bug"}
+        return bug, jira
+
+    def test_sets_type_field_on_apply(self):
+        b = make_bugz(mode="apply")
+        b.client.build_update.return_value = {}
+        bug, jira = self._bug_jira()
+        b.update_type(bug, jira, "task", "defect")
+        b.client.update_bugs.assert_called_once_with([1], {"type": "defect"})
+
+    def test_no_write_in_preview(self):
+        b = make_bugz(mode="preview")
+        bug, jira = self._bug_jira()
+        b.update_type(bug, jira, "task", "defect")
+        b.client.update_bugs.assert_not_called()
+
     def test_returns_empty_on_exception(self):
         b = make_bugz()
         b.client._backend.bug_fields.side_effect = Exception("network error")

@@ -3,6 +3,8 @@
 import jbix.constants as constants
 from jbix.constants import (
     ASSIGNEE_MAP,
+    DEFAULT_ISSUE_TYPE,
+    DEFAULT_ISSUE_TYPE_MAP,
     DEFAULT_PRIORITY_MAP,
     DEFAULT_RESOLUTION_MAP,
     DEFAULT_SEVERITY_MAP,
@@ -70,6 +72,13 @@ class TestDefaultMaps:
 
     def test_default_resolution_map_is_empty(self):
         assert DEFAULT_RESOLUTION_MAP == {}
+
+    def test_default_issue_type_map_matches_jbi(self):
+        # Guard against drift from JBI's models.py default.
+        assert DEFAULT_ISSUE_TYPE_MAP == {"defect": "Bug", "task": "Task"}
+
+    def test_default_issue_type_fallback_is_task(self):
+        assert DEFAULT_ISSUE_TYPE == "Task"
 
     def test_jira_severity_field_is_customfield(self):
         assert JIRA_SEVERITY_FIELD.startswith("customfield_")

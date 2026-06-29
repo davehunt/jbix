@@ -246,6 +246,15 @@ class BugzillaClient:
             update = self.client.build_update(priority=new)
             self.client.update_bugs([bug_info["id"]], update)
 
+    def update_type(self, bug_info: dict, jira_info: dict, current, new) -> None:
+        self._make_update(bug_info, jira_info, "type", current, new,
+                          "issuetype", jira_info.get("issuetype", ""))
+        if self._confirm():
+            # build_update() has no `type=` kwarg; set the Bugzilla `type` field directly.
+            update = self.client.build_update()
+            update["type"] = new
+            self.client.update_bugs([bug_info["id"]], update)
+
     def update_estimated_time(self, bug_info: dict, jira_info: dict, current, new) -> None:
         jira_estimate = jira_info.get("timeoriginalestimate")
         jira_hours = f"{jira_estimate / 3600:.1f}h" if jira_estimate else ""

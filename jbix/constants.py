@@ -78,6 +78,10 @@ DEFAULT_ISSUE_TYPE_MAP: dict[str, str] = {
     "task": "Task",
 }
 
+# Bug types not present in issue_type_map fall back to this Jira issue type
+# (matches JBI, where unmapped types default to "Task").
+DEFAULT_ISSUE_TYPE = "Task"
+
 # Jira custom field IDs (from ActionParams)
 JIRA_SEVERITY_FIELD = "customfield_10319"
 JIRA_ESTIMATED_IMPACT_FIELD = "customfield_10441"

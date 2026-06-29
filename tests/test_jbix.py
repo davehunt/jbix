@@ -914,7 +914,7 @@ class TestConstants:
         assert jbix_main._LINK_FLAGS_TO_FIELD["dependencies"] == ["depends_on", "blocks"]
 
     def test_reverse_supported_contains_expected(self):
-        for flag in ("summary", "priority", "severity"):
+        for flag in ("summary", "priority", "severity", "type"):
             assert flag in jbix_main.REVERSE_SUPPORTED
 
 

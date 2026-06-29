@@ -58,7 +58,7 @@ Fields auto-detected from JBI config: `summary`, `assignee`, `components`, `whit
 
 Extension fields (opt-in, never from JBI config): `--time-tracking`, `--remote-links`.
 
-Reverse sync (`--reverse`) supported for: `assignee`, `summary`, `priority`, `severity`, `whiteboard-labels`, `keyword-labels`.
+Reverse sync (`--reverse`) supported for: `assignee`, `summary`, `priority`, `severity`, `whiteboard-labels`, `keyword-labels`, `type`.
 
 ## Setup
 
