@@ -1059,8 +1059,9 @@ class TestSyncDuplicates:
         jira_info["links"] = []
 
         sync_duplicates(bug_info, jira_info, {555: original_bug}, j)
+        # current is the duplicate (inwardIssue); original is outward
         j.create_issue_link.assert_called_once_with(
-            bug_info, jira_info, "Duplicate", "FXP-400", jira_info["key"]
+            bug_info, jira_info, "Duplicate", jira_info["key"], "FXP-400"
         )
 
     def test_skips_if_link_already_exists(self, bug_info, jira_info):
@@ -1070,9 +1071,9 @@ class TestSyncDuplicates:
 
         existing = MagicMock()
         existing.type.name = "Duplicate"
-        existing.inwardIssue = MagicMock()
-        existing.inwardIssue.key = "FXP-400"
-        del existing.outwardIssue
+        existing.outwardIssue = MagicMock()  # original on the outward side
+        existing.outwardIssue.key = "FXP-400"
+        del existing.inwardIssue
         jira_info["links"] = [existing]
 
         sync_duplicates(bug_info, jira_info, {555: original_bug}, j)
@@ -1092,8 +1093,9 @@ class TestSyncDuplicates:
         jira_info["links"] = []
 
         sync_duplicates(bug_info, jira_info, {555: dup_bug}, j)
+        # the duplicating bug is the inwardIssue; current is outward
         j.create_issue_link.assert_called_once_with(
-            bug_info, jira_info, "Duplicate", jira_info["key"], "FXP-400"
+            bug_info, jira_info, "Duplicate", "FXP-400", jira_info["key"]
         )
 
     def test_skips_if_duplicated_by_link_already_exists(self, bug_info, jira_info):
@@ -1104,9 +1106,9 @@ class TestSyncDuplicates:
 
         existing = MagicMock()
         existing.type.name = "Duplicate"
-        existing.outwardIssue = MagicMock()
-        existing.outwardIssue.key = "FXP-400"
-        del existing.inwardIssue
+        existing.inwardIssue = MagicMock()  # duplicating bug on the inward side
+        existing.inwardIssue.key = "FXP-400"
+        del existing.outwardIssue
         jira_info["links"] = [existing]
 
         sync_duplicates(bug_info, jira_info, {555: dup_bug}, j)
@@ -1130,8 +1132,10 @@ class TestSyncDuplicates:
         sync_duplicates(bug_info, jira_info, {444: original_bug, 555: dup_bug}, j)
         assert j.create_issue_link.call_count == 2
         calls = j.create_issue_link.call_args_list
-        assert any(c.args[3:] == ("FXP-300", jira_info["key"]) for c in calls)
-        assert any(c.args[3:] == (jira_info["key"], "FXP-400") for c in calls)
+        # dupe_of: current(inward) duplicates original(outward)
+        assert any(c.args[3:] == (jira_info["key"], "FXP-300") for c in calls)
+        # duplicates: dup(inward) duplicates current(outward)
+        assert any(c.args[3:] == ("FXP-400", jira_info["key"]) for c in calls)
 
     def test_skips_duplicates_entry_handled_by_dupe_of(self, bug_info, jira_info):
         j = _make_jira()
@@ -1148,13 +1152,13 @@ class TestSyncDuplicates:
         j = _make_jira()
         bug_info["dupe_of"] = None
         bug_info["duplicates"] = [555]
-        # dup bug has dupe_of pointing back — existing outward link must NOT be deleted
+        # dup bug has dupe_of pointing back — existing inward link must NOT be deleted
         dup_bug = {"dupe_of": bug_info["id"], "jira": {"FXP-400": {}}}
         existing = MagicMock()
         existing.type.name = "Duplicate"
-        existing.outwardIssue = MagicMock()
-        existing.outwardIssue.key = "FXP-400"
-        del existing.inwardIssue
+        existing.inwardIssue = MagicMock()
+        existing.inwardIssue.key = "FXP-400"
+        del existing.outwardIssue
         jira_info["links"] = [existing]
 
         sync_duplicates(bug_info, jira_info, {555: dup_bug}, j)
@@ -1171,7 +1175,7 @@ class TestSyncDuplicates:
 
         sync_duplicates(bug_info, jira_info, {555: dup_bug}, j)
         j.create_issue_link.assert_called_once_with(
-            bug_info, jira_info, "Duplicate", jira_info["key"], "FXP-400"
+            bug_info, jira_info, "Duplicate", "FXP-400", jira_info["key"]
         )
 
     def test_removes_stale_dupe_of_link(self, bug_info, jira_info):
@@ -1180,10 +1184,10 @@ class TestSyncDuplicates:
         bug_info["duplicates"] = []
         stale = MagicMock()
         stale.type.name = "Duplicate"
-        stale.inwardIssue = MagicMock()
-        stale.inwardIssue.key = "FXP-400"
+        stale.outwardIssue = MagicMock()  # dupe_of links now sit on the outward side
+        stale.outwardIssue.key = "FXP-400"
         stale.id = "link-1"
-        del stale.outwardIssue
+        del stale.inwardIssue
         jira_info["links"] = [stale]
 
         sync_duplicates(bug_info, jira_info, {999: {"jira": {"FXP-400": {}}}}, j)
@@ -1198,10 +1202,10 @@ class TestSyncDuplicates:
         bug_info["duplicates"] = []
         stale = MagicMock()
         stale.type.name = "Duplicate"
-        stale.outwardIssue = MagicMock()
-        stale.outwardIssue.key = "FXP-400"
+        stale.inwardIssue = MagicMock()  # duplicated-by links now sit on the inward side
+        stale.inwardIssue.key = "FXP-400"
         stale.id = "link-2"
-        del stale.inwardIssue
+        del stale.outwardIssue
         jira_info["links"] = [stale]
 
         # External reciprocal owner — sync_duplicates won't run on it, so deletion must proceed
@@ -1218,10 +1222,10 @@ class TestSyncDuplicates:
         bug_info["duplicates"] = []
         stale = MagicMock()
         stale.type.name = "Duplicate"
-        stale.outwardIssue = MagicMock()
-        stale.outwardIssue.key = "FXP-400"
+        stale.inwardIssue = MagicMock()  # duplicated-by links now sit on the inward side
+        stale.inwardIssue.key = "FXP-400"
         stale.id = "link-2"
-        del stale.inwardIssue
+        del stale.outwardIssue
         jira_info["links"] = [stale]
 
         sync_duplicates(bug_info, jira_info, {999: {"jira": {"FXP-400": {}}}}, j)

@@ -498,14 +498,24 @@ class TestJiraClientCreateComponentEdgeCases:
 
 class TestJiraClientIssueLinkDescriptions:
     def test_duplicate_outward_change_description(self):
-        """link_type=Duplicate and jira.key == outward_issue → 'duplicated by ...' message."""
+        """Duplicate + jira.key == outwardIssue (current is the original) → 'duplicated by ...'."""
         j = make_jira(mode="apply")
         bug, jira = _make_infos()
-        # outward_issue is the current issue key → describes "this issue is a duplicate of inward"
         j.create_issue_link(bug, jira, "Duplicate", "FXP-999", jira["key"])
         j.client.create_issue_link.assert_called_once_with(
             "Duplicate", inwardIssue="FXP-999", outwardIssue=jira["key"]
         )
+        assert j.updates[-1]["jira_after"] == "duplicated by FXP-999"
+
+    def test_duplicate_inward_change_description(self):
+        """Duplicate + jira.key == inwardIssue (current is the duplicate) → 'duplicates ...'."""
+        j = make_jira(mode="apply")
+        bug, jira = _make_infos()
+        j.create_issue_link(bug, jira, "Duplicate", jira["key"], "FXP-999")
+        j.client.create_issue_link.assert_called_once_with(
+            "Duplicate", inwardIssue=jira["key"], outwardIssue="FXP-999"
+        )
+        assert j.updates[-1]["jira_after"] == "duplicates FXP-999"
 
     def test_blocks_inward_change_description(self):
         """link_type=Blocks and jira.key == inward_issue → 'blocks ...' message."""

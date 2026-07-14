@@ -366,31 +366,34 @@ def sync_duplicates(bug_info: dict, jira_info: dict, bugzilla_bugs: dict, jira: 
 
     known_jira_keys = {key for bug in bugzilla_bugs.values() for key in bug.get("jira", {})}
 
-    # --- dupe_of: current issue "duplicates" original ---
-    expected_inward: set[str] = set()
+    # --- dupe_of: current issue "duplicates" the original ---
+    # Convention (matches JBI + Blocks): the duplicate is the inwardIssue, so the
+    # current issue is inward and the original sits on the OUTWARD side.
+    expected_outward: set[str] = set()
     if dupe_of and dupe_of in bugzilla_bugs:
         logger.debug(f"Bug {bug_info['id']} duplicates {dupe_of}")
-        expected_inward.update(bugzilla_bugs[dupe_of]["jira"])
-
-    for key, link_id in inward_links.items():
-        if key not in expected_inward and key in known_jira_keys:
-            jira.delete_issue_link(bug_info, jira_info, link_id, f"removing stale duplicate {key}")
-
-    for key in [k for k in expected_inward if k not in inward_links]:
-        jira.create_issue_link(bug_info, jira_info, "Duplicate", key, jira_info["key"])
-
-    # --- duplicates: current issue "is duplicated by" others ---
-    # Build expected_outward from ALL duplicates for deletion protection; creation
-    # skips bugs whose dupe_of path already handles the link (avoids double-creation).
-    expected_outward: set[str] = set()
-    for dup_id in duplicates:
-        if dup_id in bugzilla_bugs:
-            expected_outward.update(bugzilla_bugs[dup_id]["jira"])
-    if duplicates:
-        logger.debug(f"Bug {bug_info['id']} is duplicated by {duplicates}")
+        expected_outward.update(bugzilla_bugs[dupe_of]["jira"])
 
     for key, link_id in outward_links.items():
         if key not in expected_outward and key in known_jira_keys:
+            jira.delete_issue_link(bug_info, jira_info, link_id, f"removing stale duplicate {key}")
+
+    for key in [k for k in expected_outward if k not in outward_links]:
+        jira.create_issue_link(bug_info, jira_info, "Duplicate", jira_info["key"], key)
+
+    # --- duplicates: current issue "is duplicated by" others ---
+    # Each duplicating bug is the inwardIssue (current issue is outward). Build
+    # expected_inward from ALL duplicates for deletion protection; creation skips
+    # bugs whose dupe_of path already handles the link (avoids double-creation).
+    expected_inward: set[str] = set()
+    for dup_id in duplicates:
+        if dup_id in bugzilla_bugs:
+            expected_inward.update(bugzilla_bugs[dup_id]["jira"])
+    if duplicates:
+        logger.debug(f"Bug {bug_info['id']} is duplicated by {duplicates}")
+
+    for key, link_id in inward_links.items():
+        if key not in expected_inward and key in known_jira_keys:
             if _has_reciprocal_owner(bugzilla_bugs, key, bug_info["id"]):
                 continue  # sync_duplicates on the reciprocal bug will delete this link
             jira.delete_issue_link(bug_info, jira_info, link_id, f"removing stale duplicated-by {key}")
@@ -401,8 +404,8 @@ def sync_duplicates(bug_info: dict, jira_info: dict, bugzilla_bugs: dict, jira: 
         dup_bug = bugzilla_bugs[dup_id]
         if not dup_bug.get("external") and dup_bug.get("dupe_of") == bug_info["id"]:
             continue  # sync_duplicates on dup_id handles this link (avoids duplicate link)
-        for key in [k for k in dup_bug["jira"] if k not in outward_links]:
-            jira.create_issue_link(bug_info, jira_info, "Duplicate", jira_info["key"], key)
+        for key in [k for k in dup_bug["jira"] if k not in inward_links]:
+            jira.create_issue_link(bug_info, jira_info, "Duplicate", key, jira_info["key"])
 
 
 def sync_regressions(bug_info: dict, jira_info: dict, bugzilla_bugs: dict, jira: JiraClient) -> None:

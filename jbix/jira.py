@@ -155,8 +155,10 @@ class JiraClient:
 
     def create_issue_link(self, bug: dict, jira: dict, link_type: str, inward_issue: str, outward_issue: str) -> None:
         change = f"{outward_issue} → ({link_type.lower()}) → {inward_issue}"
-        if link_type == "Duplicate" and jira["key"] == outward_issue:
-            change = f"duplicated by {inward_issue}"
+        if link_type == "Duplicate":
+            # inward = the duplicate, outward = the original
+            change = (f"duplicates {outward_issue}" if jira["key"] == inward_issue
+                      else f"duplicated by {inward_issue}")
         elif link_type == "Blocks":
             if jira["key"] == inward_issue:
                 change = f"blocks {outward_issue}"
