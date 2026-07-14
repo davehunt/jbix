@@ -142,6 +142,26 @@ def test_drift_detail_table_empty_note():
     assert "No field-level detail" in make_report._drift_detail_table(sec)
 
 
+def test_daily_drift_keeps_latest_run_per_day():
+    from datetime import date
+    entries = [
+        {"ts": "2026-07-14T09:00:00", "diff": {"drift_pct": 0.10}},
+        {"ts": "2026-07-14T15:00:00", "diff": {"drift_pct": 0.20}},  # latest that day wins
+        {"ts": "2026-07-15T08:00:00", "diff": {"drift_pct": 0.30}},
+    ]
+    d = make_report._daily_drift(entries)
+    assert d == {date(2026, 7, 14): 20.0, date(2026, 7, 15): 30.0}
+
+
+def test_daily_drift_latest_run_without_diff_is_none():
+    from datetime import date
+    entries = [
+        {"ts": "2026-07-14T09:00:00", "diff": {"drift_pct": 0.10}},
+        {"ts": "2026-07-14T15:00:00"},  # latest run that day has no diff → gap
+    ]
+    assert make_report._daily_drift(entries) == {date(2026, 7, 14): None}
+
+
 def test_site_nav_links_full_and_groups():
     nav = make_report._site_nav(["performance", "genai"], active="full")
     assert 'href="index.html"' not in nav        # 'full' is the active page → plain text

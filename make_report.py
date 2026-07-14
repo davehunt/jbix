@@ -545,17 +545,34 @@ def _html_page(title, body, init_script):
 </body></html>"""
 
 
+def _daily_drift(entries: list) -> dict:
+    """Collapse a tag's runs to the latest run per calendar day.
+
+    Returns ``{date: drift_pct%}`` (drift is None if that day's latest run had no
+    diff). Charts use this so multiple runs in a day don't clutter the timeline.
+    """
+    by_day: dict = {}  # date -> (ts, drift%|None)
+    for e in entries:
+        ts = datetime.fromisoformat(e["ts"])
+        drift = e["diff"]["drift_pct"] * 100 if e.get("diff") else None
+        cur = by_day.get(ts.date())
+        if cur is None or ts > cur[0]:
+            by_day[ts.date()] = (ts, drift)
+    return {day: drift for day, (_, drift) in by_day.items()}
+
+
 # ---------------------------------------------------------------------------
 # Summary page (index / group) — card grid + Totals + drift-over-time chart
 # ---------------------------------------------------------------------------
 def _summary_html(data, tags, *, nav_html="", group_cards_html="", scope="",
                   page_title="JBI Drift Report"):
     tags = sorted(tags)
-    all_ts = sorted({datetime.fromisoformat(e["ts"])
-                     for t in tags for e in data[t]})
-    ts_index = {ts: i for i, ts in enumerate(all_ts)}
-    labels = [ts.strftime("%b %d %H:%M") for ts in all_ts]
-    latest_ts = all_ts[-1]
+    latest_ts = max(datetime.fromisoformat(e["ts"]) for t in tags for e in data[t])
+    # Chart x-axis: one point per calendar day (latest run that day).
+    daily = {t: _daily_drift(data[t]) for t in tags}
+    all_days = sorted({d for t in tags for d in daily[t]})
+    day_index = {d: i for i, d in enumerate(all_days)}
+    labels = [d.strftime("%b %d") for d in all_days]
     total_entries = sum(len(data[t]) for t in tags)
 
     latest_sec = {t: _section_from_entry(t, data[t][-1]) for t in tags}
@@ -591,10 +608,9 @@ def _summary_html(data, tags, *, nav_html="", group_cards_html="", scope="",
     cards = "\n".join(tag_card(t, latest_sec[t], prev_sec[t], f"tags/{t}.html") for t in tags)
 
     def hist_for(t):
-        arr = [None] * len(all_ts)
-        for e in data[t]:
-            if e.get("diff"):
-                arr[ts_index[datetime.fromisoformat(e["ts"])]] = e["diff"]["drift_pct"] * 100
+        arr = [None] * len(all_days)
+        for d, drift in daily[t].items():
+            arr[day_index[d]] = drift
         return arr
 
     card_data = _embed({
@@ -723,14 +739,12 @@ def _group_breakdown(nav_groups, group_secs, names=None):
 # Per-tag detail page (drilldown)
 # ---------------------------------------------------------------------------
 def render_tag_detail(key, entries, sec, *, nav_html=""):
-    all_ts = sorted({datetime.fromisoformat(e["ts"]) for e in entries})
-    labels = [ts.strftime("%b %d %H:%M") for ts in all_ts]
-    ts_index = {ts: i for i, ts in enumerate(all_ts)}
-    hist = [None] * len(all_ts)
-    for e in entries:
-        if e.get("diff"):
-            hist[ts_index[datetime.fromisoformat(e["ts"])]] = e["diff"]["drift_pct"] * 100
-    latest_ts = all_ts[-1]
+    # Chart x-axis: one point per calendar day (latest run that day).
+    daily = _daily_drift(entries)
+    all_days = sorted(daily)
+    labels = [d.strftime("%b %d") for d in all_days]
+    hist = [daily[d] for d in all_days]
+    latest_ts = max(datetime.fromisoformat(e["ts"]) for e in entries)
 
     m = sec["metrics"]
     d = sec["drift"]
