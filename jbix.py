@@ -186,7 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--group", nargs="+", metavar="GROUP",
         help="Tag group(s) from groups.yaml to process (e.g. perf); "
-             "expands to its tags and also writes reports/<group>.html",
+             "expands to its tags",
     )
     parser.add_argument(
         "--all-tags", action="store_true", default=False,
@@ -251,7 +251,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--no-report", action="store_true", default=False,
-        help="Skip regenerating report.html after a run that recorded snapshots",
+        help="Skip regenerating output/report.html after a run that recorded snapshots",
     )
     return parser
 
@@ -1345,15 +1345,15 @@ def main() -> None:
     else:
         write_updates_csv(all_updates)
 
-    # Regenerate the whole HTML report site from the snapshot store after any
-    # run that recorded at least one snapshot. build_site() writes
-    # reports/index.html, reports/<group>.html for every group, and
-    # reports/tags/<tag>.html — so no per-group loop is needed here.
+    # Regenerate the HTML report from the snapshot store after any run that
+    # recorded at least one snapshot. build_report() always writes the whole
+    # store to output/report.html — full report plus every group and per-tag
+    # view — so no per-tag or per-group loop is needed here.
     if captured and not args.no_report:
         import make_report
 
-        make_report.build_site()
-        print(f"\n{Colors.CYAN}→ Wrote reports/ site (index, group, and per-tag pages){Colors.RESET}")
+        make_report.build_report()
+        print(f"\n{Colors.CYAN}→ Wrote output/report.html (all tags, group and per-tag views){Colors.RESET}")
 
 
 if __name__ == "__main__":

@@ -1,15 +1,20 @@
-"""Generate a standalone HTML drift-report *site* from the per-tag snapshot store.
+"""Generate the standalone HTML drift report from the per-tag snapshot store.
 
-Reads ``snapshots/<tag>.jsonl`` (one compact JSON line per run, written by
-``jbix.py``) and writes a self-contained ``reports/`` site:
-  * ``reports/index.html`` — full report across the latest snapshot of every tag
-    (condensed Totals card + per-tag cards + drift-over-time chart), with a
-    "Group views" nav linking each group summary
-  * ``reports/<group>.html`` — one summary per group in ``groups.yaml``, scoped
-    to the group's tags, linking back to the index
-  * ``reports/tags/<tag>.html`` — per-tag drilldown: full field-by-field drift
-    table (bug/Jira links + current → should-be values) and the full broken-links
-    table, so the user can perform repairs by hand
+Reads every ``snapshots/<tag>.jsonl`` (one compact JSON line per run, written by
+``jbix.py``) and always writes one self-contained file — ``output/report.html``
+— holding every view:
+
+  * the full report over all tags (Totals card, per-group breakdown, per-tag
+    cards, drift-over-time chart)
+  * one summary view per group in ``groups.yaml`` (scoped to the group's tags)
+  * one drilldown view per tag: full field-by-field drift table (bug/Jira links
+    plus current → should-be values) and the full broken-links table
+
+Views live in the same document as ``<section class="view">`` blocks and are
+switched client-side by a tiny hash router (``#/``, ``#/group/<group>``,
+``#/tag/<tag>``, plus deep links such as ``#/tag/<tag>/drift``). Charts for a
+view are built the first time it is shown, so Chart.js always measures a visible
+canvas.
 
 Chart.js is loaded from CDN; all snapshot data is embedded inline. This module
 is standalone (only ``jbix.snapshots``/``jbix.groups``, both stdlib-only, are
@@ -23,11 +28,11 @@ import json
 import pathlib
 from datetime import datetime
 
-from jbix.groups import expand_groups, group_display_names, load_groups
+from jbix.groups import group_display_names, load_groups
 from jbix.snapshots import SNAPSHOT_DIR, aggregate_metrics
 
-REPORTS_DIR = pathlib.Path("reports")
-OUT = str(REPORTS_DIR / "index.html")
+OUTPUT_DIR = pathlib.Path("output")
+OUT = OUTPUT_DIR / "report.html"
 
 # Rows shown in a per-tag drift-detail table before pointing at updates.csv;
 # matches jbix.snapshots._DRIFT_ROWS_CAP (rows are already capped at store time).
@@ -44,20 +49,43 @@ def color_for(tag, i):
 
 
 # ---------------------------------------------------------------------------
+# In-document view ids (the hash router's targets)
+# ---------------------------------------------------------------------------
+FULL_VIEW = "view-full"
+
+
+def group_view_id(group):
+    return f"view-group-{group}"
+
+
+def tag_view_id(tag):
+    return f"view-tag-{tag}"
+
+
+def _href(view_id, section=None):
+    """Route hash for a view. Deliberately path-shaped (``#/tag/fp``) rather than
+    an element id, so the browser never does its own fragment scrolling and the
+    router owns positioning."""
+    if view_id == FULL_VIEW:
+        route = "/"
+    elif view_id.startswith("view-group-"):
+        route = f"/group/{view_id[len('view-group-'):]}"
+    else:
+        route = f"/tag/{view_id[len('view-tag-'):]}"
+        if section:
+            route += f"/{section}"
+    return f"#{html.escape(route)}"
+
+
+# ---------------------------------------------------------------------------
 # Snapshot store
 # ---------------------------------------------------------------------------
-def load_snapshots(tags=None):
-    """Return {tag: [entry, ...]} sorted by timestamp, from snapshots/*.jsonl.
-
-    If ``tags`` is given (a list of tag names), only those tags are loaded;
-    otherwise every tag in the store is included (the default).
-    """
-    wanted = set(tags) if tags else None
+def load_snapshots():
+    """Return {tag: [entry, ...]} sorted by timestamp, for every tag in
+    snapshots/*.jsonl."""
     data = {}
     for path in sorted(glob.glob(str(SNAPSHOT_DIR / "*.jsonl"))):
         tag = pathlib.Path(path).stem
-        if wanted is not None and tag not in wanted:
-            continue
         entries = []
         with open(path) as fh:
             for line in fh:
@@ -136,10 +164,21 @@ def _big(value, url=None):
     return f'<span class="big">{inner}</span>'
 
 
-def _stats(sec, detail_url=None):
-    """Render the 5-stat row. When ``detail_url`` is set (per-tag cards), the
-    "fields out of sync" and "broken links" numbers link into the detail page's
-    ``#drift`` / ``#broken`` sections."""
+def _canvas(kind, key=None, title=None):
+    """A chart placeholder. The router builds it from its view's payload the
+    first time the view is shown — so no document-unique ids are needed."""
+    attrs = f' data-chart="{kind}"'
+    if key:
+        attrs += f' data-key="{html.escape(key)}"'
+    if title:
+        attrs += f' data-title="{html.escape(title)}"'
+    return f"<canvas{attrs}></canvas>"
+
+
+def _stats(sec, tag=None):
+    """Render the 5-stat row. When ``tag`` is set (per-tag / group cards), the
+    "fields out of sync" and "broken links" numbers deep-link into that tag's
+    view (``#drift-<tag>`` / ``#broken-<tag>``)."""
     m, d = sec["metrics"], sec["drift"]
     if "bz_bugs" in m:
         bz_stat = (f'<div class="stat">{_big(m["bz_bugs"], m.get("bz_bugs_url"))}'
@@ -149,15 +188,14 @@ def _stats(sec, detail_url=None):
                    '<span class="lbl">no Bugzilla components</span></div>')
 
     out = fmt(d['out']) if d else '—'
-    drift_url = f"{detail_url}#drift" if detail_url else None
-    drift_stat = (f'<a class="big big-link" href="{html.escape(drift_url)}">{out}</a>'
-                  if drift_url and d else f'<span class="big">{out}</span>')
+    drift_href = _href(tag_view_id(tag), "drift") if tag else None
+    drift_stat = (f'<a class="big big-link" href="{drift_href}">{out}</a>'
+                  if drift_href and d else f'<span class="big">{out}</span>')
 
     n_broken = len(sec.get("broken_links") or [])
     broken_cls = "big" if n_broken == 0 else "big bad"
-    broken_url = f"{detail_url}#broken" if detail_url else None
-    broken_stat = (f'<a class="{broken_cls} big-link" href="{html.escape(broken_url)}">{n_broken}</a>'
-                   if broken_url else f'<span class="{broken_cls}">{n_broken}</span>')
+    broken_stat = (f'<a class="{broken_cls} big-link" href="{_href(tag_view_id(tag), "broken")}">{n_broken}</a>'
+                   if tag else f'<span class="{broken_cls}">{n_broken}</span>')
 
     return f"""<div class="stats">
         {bz_stat}
@@ -168,10 +206,11 @@ def _stats(sec, detail_url=None):
       </div>"""
 
 
-def tag_card(key, sec, prev, detail_url):
+def tag_card(key, sec, prev):
     m = sec["metrics"]
     d = sec["drift"]
     drift_pct = d["pct"] if d else 0.0
+    detail_href = _href(tag_view_id(key))
     field_rows = ""
     # Render every drifted field present, in the order health recorded them
     # (canonical order then alphabetical) — covers type, remote_links, etc.
@@ -200,22 +239,22 @@ def tag_card(key, sec, prev, detail_url):
         <h2>{title}</h2>
         <span class="badge {_badge(drift_pct)}">drift {drift_pct:.2f}%</span>{_delta(sec, prev)}
       </header>
-      {_stats(sec, detail_url)}
+      {_stats(sec, key)}
       <div class="mini-pie-row">
-        {f'<div class="mini-pie"><canvas id="pieBz-{key}"></canvas></div>'
+        {f'<div class="mini-pie">{_canvas("bz", key)}</div>'
          if "bz_bugs" in sec["metrics"] else
          '<div class="mini-pie pie-na"><span>No Bugzilla<br>components configured</span></div>'}
-        <div class="mini-pie"><canvas id="pieJira-{key}"></canvas></div>
+        <div class="mini-pie">{_canvas("jira", key)}</div>
       </div>
       {f'<div class="pie-links"><span class="pl-slot">{untagged_link}</span><span class="pl-slot">{unlinked_link}</span></div>'
        if (untagged_link or unlinked_link) else ''}
-      <div class="mini-line-box"><canvas id="line-{key}"></canvas></div>
+      <div class="mini-line-box">{_canvas("mini", key)}</div>
       <table class="fields">
         <colgroup><col class="c-field"><col class="c-num"><col class="c-num"></colgroup>
         <thead><tr><th>Field</th><th class="num">Out of sync</th><th class="num">%</th></tr></thead>
         <tbody>{field_rows}</tbody>
       </table>
-      <a class="detail-link" href="{html.escape(detail_url)}">View tag report →</a>
+      <a class="detail-link" href="{detail_href}">View tag report →</a>
     </section>"""
 
 
@@ -292,7 +331,7 @@ def _drift_detail_table(sec):
       </table>"""
 
 
-def totals_card(sec, chart_caption=""):
+def totals_card(sec, chart_caption="", bz_title=None):
     d = sec["drift"]
     drift_pct = d["pct"] if d else 0.0
     sub = f'{fmt(d["out"])} / {fmt(d["total"])} linked pairs out of sync' if d else ""
@@ -311,16 +350,16 @@ def totals_card(sec, chart_caption=""):
           </div>
         </div>
         <div class="featured-right">
-          {'<div class="mini-pie"><canvas id="pieBz-Totals"></canvas></div>'
+          {f'<div class="mini-pie">{_canvas("bz", "Totals", bz_title or "Bugzilla bugs")}</div>'
            if "bz_bugs" in sec["metrics"] else
            '<div class="mini-pie pie-na"><span>No Bugzilla<br>components configured</span></div>'}
-          <div class="mini-pie"><canvas id="pieJira-Totals"></canvas></div>
+          <div class="mini-pie">{_canvas("jira", "Totals", "Jira issues")}</div>
         </div>
       </div>
       <div class="totals-line">
         <h3>Drift score over time</h3>
         {caption_html}
-        <div class="big-line-box"><canvas id="lineAll"></canvas></div>
+        <div class="big-line-box">{_canvas("all")}</div>
       </div>
     </section>"""
 
@@ -365,18 +404,30 @@ STYLE = """
   .sub { color:var(--mut); margin:0 0 28px; }
   a.backlink { display:inline-block; margin:0 0 18px; color:#2563eb; text-decoration:none; font-size:14px; }
   a.backlink:hover { text-decoration:underline; }
-  .nav { display:flex; flex-wrap:wrap; gap:8px 10px; margin:0 0 26px; align-items:baseline; }
-  .nav .nav-lbl { font-size:13px; font-weight:600; color:var(--mut); text-transform:uppercase; letter-spacing:.06em; }
-  .nav a, .nav .nav-here { font-size:13px; text-decoration:none; padding:2px 10px;
+  .nav { display:flex; flex-wrap:wrap; gap:8px 10px; margin:0 0 10px; align-items:baseline; }
+  .nav:last-of-type { margin-bottom:26px; }
+  details.nav-details { margin:0 0 26px; }
+  details.nav-details > summary { font-size:13px; font-weight:600; color:var(--mut);
+    text-transform:uppercase; letter-spacing:.06em; cursor:pointer; width:max-content; }
+  details.nav-details > summary:hover { color:var(--ink); }
+  details.nav-details[open] > summary { margin-bottom:10px; }
+  details.nav-details .nav { margin-bottom:0; }
+  details.nav-details .nav .nav-lbl { display:none; }
+  .nav .nav-lbl { font-size:13px; font-weight:600; color:var(--mut); text-transform:uppercase;
+    letter-spacing:.06em; min-width:62px; }
+  .nav a { font-size:13px; text-decoration:none; padding:2px 10px; color:#2563eb;
     border:1px solid var(--line); border-radius:999px; background:#fff; }
-  .nav a { color:#2563eb; }
   .nav a:hover { text-decoration:underline; }
-  .nav .nav-here { color:#1f2937; font-weight:600; background:#eef2ff; border-color:#c7d2fe; }
+  .nav a.nav-here { color:#1f2937; font-weight:600; background:#eef2ff; border-color:#c7d2fe;
+    text-decoration:none; }
   .section-label { font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.06em;
     color:var(--mut); margin:4px 0 14px; }
   .breakdown { margin-top:40px; padding-top:28px; border-top:2px solid var(--line); margin-bottom:8px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(360px,1fr)); gap:20px; }
   .grid.compact { grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); }
+
+  .view { display:none; }
+  .view.active { display:block; }
 
   .card { background:var(--card); border:1px solid var(--line); border-radius:16px;
     padding:20px 22px; box-shadow:0 1px 3px rgba(16,24,40,.05);
@@ -466,9 +517,7 @@ const BZ_COLORS = ['#2563eb', '#cbd5e1'];
 const JIRA_COLORS = ['#10b981', '#cbd5e1'];
 const JIRA3_COLORS = ['#10b981', '#6ee7b7', '#cbd5e1'];
 
-function doughnut(id, labels, values, colors, title, legend) {
-  const el = document.getElementById(id);
-  if (!el) return;
+function doughnut(el, labels, values, colors, title) {
   const total = values.reduce((a, b) => a + b, 0);
   new Chart(el, {
     type: 'doughnut',
@@ -478,8 +527,7 @@ function doughnut(id, labels, values, colors, title, legend) {
       responsive: true, maintainAspectRatio: false, cutout: '62%',
       plugins: {
         title: { display: !!title, text: title, color: '#6b7280', font: { size: 12, weight: '600' } },
-        legend: { display: !!legend, position: 'bottom',
-                   labels: { usePointStyle: true, padding: 10, font: { size: 11 } } },
+        legend: { display: false },
         tooltip: { callbacks: { label: c => {
           const p = total ? (100 * c.parsed / total).toFixed(1) : '0';
           return ` ${c.label}: ${c.parsed.toLocaleString()} (${p}%)`;
@@ -489,9 +537,7 @@ function doughnut(id, labels, values, colors, title, legend) {
   });
 }
 
-function miniLine(id, labels, data, color) {
-  const el = document.getElementById(id);
-  if (!el) return;
+function miniLine(el, labels, data, color) {
   new Chart(el, {
     type: 'line',
     data: { labels, datasets: [{ data, borderColor: color,
@@ -510,15 +556,102 @@ function miniLine(id, labels, data, color) {
   });
 }
 
-function piePair(key, p, hasBz) {
-  if (hasBz) doughnut('pieBz-' + key, ['Tagged', 'Untagged'], [p.tagged, p.untagged], BZ_COLORS, 'Bugzilla', false);
-  if (p.linked_other > 0) {
-    doughnut('pieJira-' + key, ['Linked (this tag)', 'Linked (other tags)', 'Not linked'],
-             [p.linked, p.linked_other, p.unlinked], JIRA3_COLORS, 'Jira', false);
-  } else {
-    doughnut('pieJira-' + key, ['Linked', 'Not linked'], [p.linked, p.unlinked], JIRA_COLORS, 'Jira', false);
-  }
+function multiLine(el, labels, series, showLegend) {
+  new Chart(el, {
+    type: 'line',
+    data: { labels, datasets: series.map(s => ({
+      label: s.label, data: s.data, borderColor: s.color,
+      backgroundColor: s.color + '18', borderWidth: 2, tension: 0.25,
+      pointRadius: 3, pointHoverRadius: 6, fill: false, spanGaps: true })) },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: showLegend !== false, position: 'bottom',
+                  labels: { usePointStyle: true, padding: 14, font: { size: 12 } } },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y == null ? '—' : c.parsed.y.toFixed(2) + '%'}` } }
+      },
+      scales: {
+        y: { beginAtZero: true, title: { display: true, text: 'Drift score (% of linked pairs out of sync)' },
+              ticks: { callback: v => v + '%' }, grid: { color: '#eef0f4' } },
+        x: { grid: { display: false }, ticks: { maxRotation: 45, minRotation: 0 } }
+      }
+    }
+  });
 }
+
+/* Build every chart in a view, once, the first time it becomes visible —
+   Chart.js needs a laid-out canvas to size itself correctly. */
+function initCharts(view) {
+  const V = VIEWS[view.id];
+  if (!V || view.dataset.charted) return;
+  view.dataset.charted = '1';
+  view.querySelectorAll('canvas[data-chart]').forEach(el => {
+    const kind = el.dataset.chart, key = el.dataset.key, title = el.dataset.title;
+    const p = key ? V.pies[key] : null;
+    if (kind === 'bz') {
+      if (p) doughnut(el, ['Tagged', 'Untagged'], [p.tagged, p.untagged], BZ_COLORS, title || 'Bugzilla');
+    } else if (kind === 'jira') {
+      if (!p) return;
+      if (p.linked_other > 0) {
+        doughnut(el, ['Linked (this tag)', 'Linked (other tags)', 'Not linked'],
+                 [p.linked, p.linked_other, p.unlinked], JIRA3_COLORS, title || 'Jira');
+      } else {
+        doughnut(el, ['Linked', 'Not linked'], [p.linked, p.unlinked], JIRA_COLORS, title || 'Jira');
+      }
+    } else if (kind === 'mini') {
+      miniLine(el, V.labels, V.hist[key] || [], V.colors[key]);
+    } else if (kind === 'big') {
+      multiLine(el, V.labels, [{ label: key, data: V.hist[key] || [], color: V.colors[key] }], false);
+    } else if (kind === 'all') {
+      multiLine(el, V.labels, (V.chartTags || []).map(
+        t => ({ label: t, data: V.hist[t] || [], color: V.colors[t] })));
+    }
+  });
+}
+"""
+
+ROUTER = """
+/* Hash router: every view lives in this one file, reached by a path-shaped hash
+   — '#/' (full report), '#/group/<group>', '#/tag/<tag>' and the deep links
+   '#/tag/<tag>/drift' | '#/tag/<tag>/broken'. Routes deliberately don't match
+   any element id, so the browser never scroll-to-fragments behind our back. */
+function route(hash) {
+  const parts = (hash || '').replace(/^#\\/?/, '').split('/').filter(Boolean)
+    .map(s => { try { return decodeURIComponent(s); } catch (e) { return s; } });
+  if (parts[0] === 'group' && parts[1]) return { view: 'view-group-' + parts[1] };
+  if (parts[0] === 'tag' && parts[1]) {
+    return { view: 'view-tag-' + parts[1],
+             anchor: parts[2] ? parts[2] + '-' + parts[1] : null };
+  }
+  return { view: 'view-full' };
+}
+
+let anchor = null;   // element to scroll to for the current view (null = top)
+
+function position() {
+  if (anchor) anchor.scrollIntoView({ block: 'start' });
+  else window.scrollTo(0, 0);
+}
+
+function showView(hash) {
+  const r = route(hash);
+  const view = document.getElementById(r.view) ||
+               document.getElementById('view-full') || document.querySelector('.view');
+  if (!view) return;
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v === view));
+  document.querySelectorAll('.nav a[data-view]').forEach(
+    a => a.classList.toggle('nav-here', a.dataset.view === view.id));
+  const here = document.querySelector('.nav a.nav-here');
+  const collapsed = here && here.closest('details');
+  if (collapsed) collapsed.open = true;   // reveal the active link's nav row
+  initCharts(view);
+  anchor = (r.anchor && view.id === r.view) ? document.getElementById(r.anchor) : null;
+  position();
+  requestAnimationFrame(position);   // settle once the view has laid out
+}
+window.addEventListener('hashchange', () => showView(location.hash));
+showView(location.hash);
 """
 
 
@@ -528,19 +661,21 @@ def _embed(obj):
     return json.dumps(obj).replace("<", "\\u003c")
 
 
-def _html_page(title, body, init_script):
+def _html_page(title, body, view_payloads):
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{html.escape(title)}</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<style>{STYLE}</style></head>
+<style>{STYLE}</style>
+<noscript><style>.view {{ display:block; }}</style></noscript></head>
 <body><div class="wrap">
 {body}
 </div>
 <script>
+const VIEWS = {_embed(view_payloads)};
 {CHART_HELPERS}
-{init_script}
+{ROUTER}
 </script>
 </body></html>"""
 
@@ -561,24 +696,30 @@ def _daily_drift(entries: list) -> dict:
     return {day: drift for day, (_, drift) in by_day.items()}
 
 
-# ---------------------------------------------------------------------------
-# Summary page (index / group) — card grid + Totals + drift-over-time chart
-# ---------------------------------------------------------------------------
-def _summary_html(data, tags, *, nav_html="", group_cards_html="", scope="",
-                  page_title="JBI Drift Report"):
-    tags = sorted(tags)
-    latest_ts = max(datetime.fromisoformat(e["ts"]) for t in tags for e in data[t])
-    # Chart x-axis: one point per calendar day (latest run that day).
+def _hist_series(data, tags):
+    """(chart labels, {tag: [drift% per label, None for gaps]}) — one point per
+    calendar day covered by ``tags``."""
     daily = {t: _daily_drift(data[t]) for t in tags}
     all_days = sorted({d for t in tags for d in daily[t]})
-    day_index = {d: i for i, d in enumerate(all_days)}
-    labels = [d.strftime("%b %d") for d in all_days]
-    total_entries = sum(len(data[t]) for t in tags)
+    index = {d: i for i, d in enumerate(all_days)}
+    hist = {}
+    for t in tags:
+        arr = [None] * len(all_days)
+        for d, drift in daily[t].items():
+            arr[index[d]] = drift
+        hist[t] = arr
+    return [d.strftime("%b %d") for d in all_days], hist
 
-    latest_sec = {t: _section_from_entry(t, data[t][-1]) for t in tags}
-    prev_sec = {t: (_section_from_entry(t, data[t][-2]) if len(data[t]) > 1 else None)
-                for t in tags}
-    _apply_linked_other(latest_sec, data, tags)
+
+# ---------------------------------------------------------------------------
+# Summary view (full report / group) — Totals + card grid + drift-over-time
+# ---------------------------------------------------------------------------
+def _summary_view(view_id, data, tags, latest_sec, prev_sec, *, scope="",
+                  group_cards_html=""):
+    """Return (html, chart payload) for a summary view scoped to ``tags``."""
+    tags = sorted(tags)
+    labels, hist = _hist_series(data, tags)
+    total_entries = sum(len(data[t]) for t in tags)
 
     totals = aggregate_metrics([data[t][-1] for t in tags])
     total_sec = _section(f"Totals ({len(tags)} tags)",
@@ -601,106 +742,71 @@ def _summary_html(data, tags, *, nav_html="", group_cards_html="", scope="",
         chart_caption = (f"Showing {len(chart_tags)} tag(s) with current drift; "
                          f"{len(tags) - len(chart_tags)} steady at 0% (see per-tag cards).")
 
-    no_bz = [t for t in tags if "bz_bugs" not in latest_sec[t]["metrics"]]
-    n_with_bz = len(tags) - len(no_bz)
+    n_with_bz = sum(1 for t in tags if "bz_bugs" in latest_sec[t]["metrics"])
+    bz_title = f"Bugzilla bugs ({n_with_bz} of {len(tags)} tags)"
 
-    totals_html = totals_card(total_sec, chart_caption)
-    cards = "\n".join(tag_card(t, latest_sec[t], prev_sec[t], f"tags/{t}.html") for t in tags)
+    cards = "\n".join(tag_card(t, latest_sec[t], prev_sec[t]) for t in tags)
+    scope_html = f"{html.escape(scope)} · " if scope else ""
 
-    def hist_for(t):
-        arr = [None] * len(all_days)
-        for d, drift in daily[t].items():
-            arr[day_index[d]] = drift
-        return arr
+    body = f"""
+  <section class="view" id="{html.escape(view_id)}">
+    <p class="sub">{scope_html}Latest snapshot {_latest_label(data, tags)} · {total_entries} snapshots across {len(tags)} tags</p>
+    {totals_card(total_sec, chart_caption, bz_title)}
+    {group_cards_html}
+    <section class="breakdown tags">
+      <p class="section-label">Per-tag breakdown</p>
+      <div class="grid">
+        {cards}
+      </div>
+    </section>
+  </section>"""
 
-    card_data = _embed({
+    payload = {
         "labels": labels,
-        "tags": tags,
         "chartTags": chart_tags,
-        "noBz": no_bz,
-        "bzCoverage": [n_with_bz, len(tags)],
-        "totalsHasBz": n_with_bz > 0,
-        "hist": {t: hist_for(t) for t in tags},
+        "hist": hist,
         "pies": {**{t: pie_for(latest_sec[t]) for t in tags}, "Totals": pie_for(total_sec)},
         "colors": {**{t: color_for(t, i) for i, t in enumerate(tags)},
                    "Totals": COLORS["Totals"]},
-    })
-
-    init = f"""
-const C = {card_data};
-C.tags.forEach(t => {{
-  miniLine('line-' + t, C.labels, C.hist[t], C.colors[t]);
-  piePair(t, C.pies[t], !C.noBz.includes(t));
-}});
-if (C.totalsHasBz) {{
-  doughnut('pieBz-Totals', ['Tagged', 'Untagged'], [C.pies.Totals.tagged, C.pies.Totals.untagged],
-           BZ_COLORS, `Bugzilla bugs (${{C.bzCoverage[0]}} of ${{C.bzCoverage[1]}} tags)`, false);
-}}
-doughnut('pieJira-Totals', ['Linked', 'Not linked'], [C.pies.Totals.linked, C.pies.Totals.unlinked], JIRA_COLORS, 'Jira issues', false);
-new Chart(document.getElementById('lineAll'), {{
-  type: 'line',
-  data: {{ labels: C.labels, datasets: C.chartTags.map(t => ({{
-    label: t, data: C.hist[t], borderColor: C.colors[t],
-    backgroundColor: C.colors[t] + '18', borderWidth: 2, tension: 0.25,
-    pointRadius: 3, pointHoverRadius: 6, fill: false, spanGaps: true }})) }},
-  options: {{
-    responsive: true, maintainAspectRatio: false,
-    interaction: {{ mode: 'index', intersect: false }},
-    plugins: {{
-      legend: {{ position: 'bottom', labels: {{ usePointStyle: true, padding: 14, font: {{ size: 12 }} }} }},
-      tooltip: {{ callbacks: {{ label: c => `${{c.dataset.label}}: ${{c.parsed.y == null ? '—' : c.parsed.y.toFixed(2) + '%'}}` }} }}
-    }},
-    scales: {{
-      y: {{ beginAtZero: true, title: {{ display: true, text: 'Drift score (% of linked pairs out of sync)' }},
-            ticks: {{ callback: v => v + '%' }}, grid: {{ color: '#eef0f4' }} }},
-      x: {{ grid: {{ display: false }}, ticks: {{ maxRotation: 45, minRotation: 0 }} }}
-    }}
-  }}
-}});
-"""
-
-    scope_html = f"{html.escape(scope)} · " if scope else ""
-    body = f"""{nav_html}
-  <h1>JBI Sync Drift Report</h1>
-  <p class="sub">{scope_html}Latest snapshot {_latest_label(data, tags)} · {total_entries} snapshots across {len(tags)} tags</p>
-  {totals_html}
-  {group_cards_html}
-  <section class="breakdown tags">
-    <p class="section-label">Per-tag breakdown</p>
-    <div class="grid">
-      {cards}
-    </div>
-  </section>
-  <footer>Generated by make_report.py from snapshots/*.jsonl · {latest_ts.strftime('%Y-%m-%d %H:%M')}</footer>"""
-
-    return _html_page(f"{page_title} — {latest_ts.strftime('%Y-%m-%d %H:%M')}", body, init)
+    }
+    return body, payload
 
 
-def _site_nav(groups, prefix="", active=None, names=None):
-    """A consistent top nav: 'Full Report' + a link per group.
+# Above this many tags the 'Tags' nav row is collapsed into a <details>, so the
+# chrome stays one line tall; the router opens it when a tag view is active.
+_NAV_TAGS_COLLAPSE = 12
 
-    ``prefix`` is prepended to hrefs ('' for index/group pages in ``reports/``,
-    '../' for tag pages in ``reports/tags/``). ``active`` (``'full'`` or a group
-    key) renders the current page as plain text instead of a link. ``names`` maps
-    a group key to its display label (defaults to the key).
-    """
+
+def _nav_row(label, links):
+    parts = [f'<a data-view="{html.escape(vid)}" href="{_href(vid)}">{html.escape(text)}</a>'
+             for text, vid in links]
+    return f'<div class="nav"><span class="nav-lbl">{label}</span> {" ".join(parts)}</div>'
+
+
+def _site_nav(nav_groups, tags, names=None):
+    """The document's nav: a 'Reports' row (full report + one link per group)
+    and a 'Tags' row (one link per tag view). The router marks the active link,
+    so the nav is rendered once for the whole file."""
     names = names or {}
-    items = [("Full Report", "index.html", "full")]
-    items += [(names.get(g, g), f"{g}.html", g) for g in groups]
-    parts = []
-    for label, href, key in items:
-        if key == active:
-            parts.append(f'<span class="nav-here">{html.escape(label)}</span>')
+    items = [("Full Report", FULL_VIEW)]
+    items += [(names.get(g, g), group_view_id(g)) for g in nav_groups]
+    out = _nav_row("Reports", items) + "\n"
+    if tags:
+        tag_links = [(t, tag_view_id(t)) for t in sorted(tags)]
+        row = _nav_row("Tags", tag_links)
+        if len(tag_links) > _NAV_TAGS_COLLAPSE:
+            out += (f'<details class="nav-details"><summary>Tags ({len(tag_links)})</summary>'
+                    f'{row}</details>\n')
         else:
-            parts.append(f'<a href="{html.escape(prefix + href)}">{html.escape(label)}</a>')
-    return f'<div class="nav"><span class="nav-lbl">Reports</span> {" ".join(parts)}</div>'
+            out += row + "\n"
+    return out
 
 
 def group_card(group, sec, display=None):
-    """A compact per-group card for the index's 'Per-group breakdown'."""
+    """A compact per-group card for the full report's 'Per-group breakdown'."""
     d = sec["drift"]
     drift_pct = d["pct"] if d else 0.0
-    href = f"{html.escape(group)}.html"
+    href = _href(group_view_id(group))
     label = html.escape(display or group)
     return f"""
     <section class="card group">
@@ -713,19 +819,21 @@ def group_card(group, sec, display=None):
     </section>"""
 
 
-def _group_sections(data, groups, nav_groups):
+def _group_sections(data, groups, nav_groups, names=None):
     """{group: section} of aggregated metrics for each group (latest snapshots)."""
+    names = names or {}
     secs = {}
     for g in nav_groups:
         gtags = [t for t in groups[g] if t in data]
         totals = aggregate_metrics([data[t][-1] for t in gtags])
-        secs[g] = _section(f"{g} ({len(gtags)} tags)", totals["bugzilla"], totals["jira"],
+        secs[g] = _section(f"{names.get(g, g)} ({len(gtags)} tags)",
+                           totals["bugzilla"], totals["jira"],
                            totals["diff"], broken=totals.get("broken_links"))
     return secs
 
 
 def _group_breakdown(nav_groups, group_secs, names=None):
-    """The index's 'Per-group breakdown' section (one card per group)."""
+    """The full report's 'Per-group breakdown' section (one card per group)."""
     if not nav_groups:
         return ""
     names = names or {}
@@ -736,14 +844,11 @@ def _group_breakdown(nav_groups, group_secs, names=None):
 
 
 # ---------------------------------------------------------------------------
-# Per-tag detail page (drilldown)
+# Per-tag detail view (drilldown)
 # ---------------------------------------------------------------------------
-def render_tag_detail(key, entries, sec, *, nav_html=""):
-    # Chart x-axis: one point per calendar day (latest run that day).
-    daily = _daily_drift(entries)
-    all_days = sorted(daily)
-    labels = [d.strftime("%b %d") for d in all_days]
-    hist = [daily[d] for d in all_days]
+def tag_detail_view(key, entries, sec):
+    """Return (html, chart payload) for one tag's drilldown view."""
+    labels, hist = _hist_series({key: entries}, [key])
     latest_ts = max(datetime.fromisoformat(e["ts"]) for e in entries)
 
     m = sec["metrics"]
@@ -768,119 +873,130 @@ def render_tag_detail(key, entries, sec, *, nav_html=""):
                  f'<span class="pl-slot">{unlinked_link}</span></div>'
                  if (untagged_link or unlinked_link) else "")
 
-    bz_pie = (f'<div class="mini-pie"><canvas id="pieBz-{key}"></canvas></div>' if has_bz else
+    bz_pie = (f'<div class="mini-pie">{_canvas("bz", key)}</div>' if has_bz else
               '<div class="mini-pie pie-na"><span>No Bugzilla<br>components configured</span></div>')
 
     drift_sub = (f'{fmt(d["out"])} / {fmt(d["total"])} linked pairs out of sync' if d else "")
     n_broken = len(sec.get("broken_links") or [])
-    body = f"""{nav_html}
-  <h1>JBI Sync Drift Report</h1>
-  <p class="sub">Tag detail · latest snapshot {latest_ts.strftime('%A %d %B %Y, %H:%M')}</p>
+    esc_key = html.escape(key)
+    body = f"""
+  <section class="view" id="{html.escape(tag_view_id(key))}">
+    <a class="backlink" href="{_href(FULL_VIEW)}">← All tags</a>
+    <p class="sub">Tag detail · latest snapshot {latest_ts.strftime('%A %d %B %Y, %H:%M')}</p>
 
-  <section class="card featured">
-    <header>
-      <h2>{title}</h2>
-    </header>
-    <div class="featured-body">
-      <div class="featured-left">
-        {_stats(sec)}
-        <div class="drift-headline">
-          <span class="dh-num">{drift_pct:.2f}%</span>
-          <span class="dh-sub">overall drift{f'<br>{drift_sub}' if drift_sub else ''}</span>
+    <section class="card featured">
+      <header>
+        <h2>{title}</h2>
+      </header>
+      <div class="featured-body">
+        <div class="featured-left">
+          {_stats(sec)}
+          <div class="drift-headline">
+            <span class="dh-num">{drift_pct:.2f}%</span>
+            <span class="dh-sub">overall drift{f'<br>{drift_sub}' if drift_sub else ''}</span>
+          </div>
+        </div>
+        <div class="featured-right stacked">
+          <div class="mini-pie-row">
+            {bz_pie}
+            <div class="mini-pie">{_canvas("jira", key)}</div>
+          </div>
+          {pie_links}
         </div>
       </div>
-      <div class="featured-right stacked">
-        <div class="mini-pie-row">
-          {bz_pie}
-          <div class="mini-pie"><canvas id="pieJira-{key}"></canvas></div>
-        </div>
-        {pie_links}
+      <div class="totals-line">
+        <h3>Drift score over time</h3>
+        <div class="big-line-box">{_canvas("big", key)}</div>
       </div>
-    </div>
-    <div class="totals-line">
-      <h3>Drift score over time</h3>
-      <div class="big-line-box"><canvas id="line-{key}"></canvas></div>
-    </div>
-  </section>
+    </section>
 
-  <section class="detail-section">
-    <h3 id="drift">Drifted fields</h3>
-    <p class="hint">Each row is one out-of-sync field on a linked bug ↔ issue pair.
-       "Should be" is the value forward-sync would write to Jira from Bugzilla.</p>
-    {_drift_detail_table(sec)}
-  </section>
+    <section class="detail-section">
+      <h3 id="drift-{esc_key}">Drifted fields</h3>
+      <p class="hint">Each row is one out-of-sync field on a linked bug ↔ issue pair.
+         "Should be" is the value forward-sync would write to Jira from Bugzilla.</p>
+      {_drift_detail_table(sec)}
+    </section>
 
-  <section class="detail-section">
-    <h3 id="broken">Broken links ({n_broken})</h3>
-    <p class="hint">Bugzilla see_also references to deleted/moved Jira issues, and
-       orphaned Jira issues whose tagged bug no longer links them.</p>
-    {_broken_links_table(sec, csv_name=f"output/broken_links_{key}.csv", limit=None) or '<p class="empty">None — all links resolve.</p>'}
-  </section>
-  <footer>Generated by make_report.py from snapshots/{key}.jsonl · {latest_ts.strftime('%Y-%m-%d %H:%M')}</footer>"""
+    <section class="detail-section">
+      <h3 id="broken-{esc_key}">Broken links ({n_broken})</h3>
+      <p class="hint">Bugzilla see_also references to deleted/moved Jira issues, and
+         orphaned Jira issues whose tagged bug no longer links them.</p>
+      {_broken_links_table(sec, csv_name=f"output/broken_links_{key}.csv", limit=None) or '<p class="empty">None — all links resolve.</p>'}
+    </section>
+  </section>"""
 
-    init = f"""
-const P = {_embed(pie_for(sec))};
-const LABELS = {_embed(labels)};
-const HIST = {_embed(hist)};
-miniLine('line-{key}', LABELS, HIST, {_embed(color_for(key, 0))});
-piePair('{key}', P, {str(has_bz).lower()});
-"""
-    return _html_page(f"JBI Drift Report — {sec['title']}", body, init)
+    payload = {"labels": labels, "hist": hist, "pies": {key: pie_for(sec)},
+               "colors": {key: color_for(key, 0)}}
+    return body, payload
 
 
 # ---------------------------------------------------------------------------
-# Site builders
+# Report builder
 # ---------------------------------------------------------------------------
 def _nav_groups(data):
-    """(groups→tags, sorted group keys with ≥1 present tag, group→display-name)."""
+    """(groups→tags, sorted group keys worth their own view, group→display-name).
+
+    A group is skipped when none of its tags are present, and — when it is the
+    only group and covers every tag in the report — when its view would just
+    duplicate the full report.
+    """
     groups = load_groups()
     nav = [g for g in sorted(groups) if any(t in data for t in groups[g])]
+    if len(nav) == 1 and {t for t in groups[nav[0]] if t in data} == set(data):
+        nav = []
     return groups, nav, group_display_names()
 
 
-def _write_tag_pages(data, tags):
-    tag_dir = REPORTS_DIR / "tags"
-    tag_dir.mkdir(parents=True, exist_ok=True)
-    _, nav_groups, names = _nav_groups(data)
-    nav = _site_nav(nav_groups, prefix="../", names=names)
-    latest_sec = {t: _section_from_entry(t, data[t][-1]) for t in tags}
-    # linked_other is project-accurate across the whole loaded set.
-    _apply_linked_other(latest_sec, data, list(data))
-    for t in tags:
-        (tag_dir / f"{t}.html").write_text(
-            render_tag_detail(t, data[t], latest_sec[t], nav_html=nav))
-
-
-def build_site(data=None):
-    """Build the whole cross-linked ``reports/`` site from the snapshot store.
-
-    Writes ``reports/index.html`` (all tags, with a per-group breakdown),
-    ``reports/<group>.html`` for each group in ``groups.yaml`` with at least one
-    tag present, and ``reports/tags/<tag>.html`` for every tag. Returns the
-    loaded snapshot data.
-    """
-    if data is None:
-        data = load_snapshots()
-    if not data:
-        raise SystemExit(f"No snapshots found in {SNAPSHOT_DIR}/.")
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+def render(data):
+    """Render the whole report — every view — as one HTML document."""
     tags = sorted(data)
     groups, nav_groups, names = _nav_groups(data)
 
-    group_secs = _group_sections(data, groups, nav_groups)
-    (REPORTS_DIR / "index.html").write_text(
-        _summary_html(data, tags,
-                      nav_html=_site_nav(nav_groups, active="full", names=names),
-                      group_cards_html=_group_breakdown(nav_groups, group_secs, names)))
+    latest_sec = {t: _section_from_entry(t, data[t][-1]) for t in tags}
+    prev_sec = {t: (_section_from_entry(t, data[t][-2]) if len(data[t]) > 1 else None)
+                for t in tags}
+    # linked_other is project-accurate across the whole loaded set.
+    _apply_linked_other(latest_sec, data, tags)
+
+    payloads, views = {}, []
+    group_secs = _group_sections(data, groups, nav_groups, names)
+    body, payloads[FULL_VIEW] = _summary_view(
+        FULL_VIEW, data, tags, latest_sec, prev_sec,
+        group_cards_html=_group_breakdown(nav_groups, group_secs, names))
+    views.append(body)
 
     for g in nav_groups:
         gtags = [t for t in groups[g] if t in data]
-        label = names.get(g, g)
-        (REPORTS_DIR / f"{g}.html").write_text(
-            _summary_html(data, gtags, nav_html=_site_nav(nav_groups, active=g, names=names),
-                          scope=f"Group: {label}", page_title=f"JBI Drift Report — {label}"))
+        vid = group_view_id(g)
+        body, payloads[vid] = _summary_view(
+            vid, data, gtags, latest_sec, prev_sec, scope=f"Group: {names.get(g, g)}")
+        views.append(body)
 
-    _write_tag_pages(data, tags)
+    for t in tags:
+        vid = tag_view_id(t)
+        body, payloads[vid] = tag_detail_view(t, data[t], latest_sec[t])
+        views.append(body)
+
+    latest_ts = max(datetime.fromisoformat(e["ts"]) for t in tags for e in data[t])
+    doc_body = f"""  <h1>JBI Sync Drift Report</h1>
+{_site_nav(nav_groups, tags, names)}
+{"".join(views)}
+  <footer>Generated by make_report.py from snapshots/*.jsonl · {latest_ts.strftime('%Y-%m-%d %H:%M')}</footer>"""
+
+    return _html_page(f"JBI Drift Report — {latest_ts.strftime('%Y-%m-%d %H:%M')}",
+                      doc_body, payloads)
+
+
+def build_report():
+    """Write the whole drift report — every tag, every view — to ``output/report.html``.
+
+    Returns the loaded snapshot data.
+    """
+    data = load_snapshots()
+    if not data:
+        raise SystemExit(f"No snapshots found in {SNAPSHOT_DIR}/.")
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    OUT.write_text(render(data))
     return data
 
 
@@ -889,70 +1005,15 @@ def _latest_label(data, tags):
     return latest.strftime("%A %d %B %Y, %H:%M")
 
 
-def generate(tags=None, output=None):
-    """Write a single summary file (scoped to ``tags``) plus its tag-detail pages.
-
-    Used by the CLI ``--tags`` / ``--group`` / ``-o`` paths. ``output`` defaults
-    to ``reports/index.html``. The summary lives in ``reports/`` so its
-    ``tags/<tag>.html`` links resolve.
-    """
-    data = load_snapshots(tags)
-    if not data:
-        if tags:
-            raise SystemExit(f"No snapshots found for {', '.join(tags)} in {SNAPSHOT_DIR}/.")
-        raise SystemExit(f"No snapshots found in {SNAPSHOT_DIR}/.")
-    if tags:
-        missing = [t for t in tags if t not in data]
-        if missing:
-            print(f"warning: no snapshots for {', '.join(missing)} — skipping")
-    scope = sorted(data)
-    _, nav_groups, names = _nav_groups(data)
-    out = pathlib.Path(output or OUT)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(_summary_html(data, scope, nav_html=_site_nav(nav_groups, active="full", names=names)))
-    _write_tag_pages(data, scope)
-    return data
-
-
-def _report(tags, output):
-    data = generate(tags, output)
-    total = sum(len(v) for v in data.values())
-    print(f"wrote {output or OUT} from {total} snapshots across {len(data)} tags")
-
-
 def main():
-    parser = argparse.ArgumentParser(
-        description="Build the reports/ drift-report site from the snapshot store."
-    )
-    parser.add_argument(
-        "--tags", nargs="+", metavar="TAG",
-        help="Limit a scoped report to these tags (default: build the whole site)",
-    )
-    parser.add_argument(
-        "--group", nargs="+", metavar="GROUP",
-        help="Build one reports/<group>.html per group (from groups.yaml)",
-    )
-    parser.add_argument(
-        "--output", "-o", default=None, metavar="PATH",
-        help=f"Destination HTML file (default: {OUT}, or reports/<group>.html for a single --group)",
-    )
-    args = parser.parse_args()
-
-    if args.group and args.tags:
-        parser.error("use --group or --tags, not both")
-    if args.group and args.output and len(args.group) > 1:
-        parser.error("--output cannot name multiple group reports; drop -o or pass one group")
-
-    if args.group:
-        for g in args.group:
-            out = args.output if (len(args.group) == 1 and args.output) else str(REPORTS_DIR / f"{g}.html")
-            _report(expand_groups([g]), out)
-    elif args.tags or args.output:
-        _report(args.tags, args.output or OUT)
-    else:
-        data = build_site()
-        total = sum(len(v) for v in data.values())
-        print(f"wrote {REPORTS_DIR}/ site from {total} snapshots across {len(data)} tags")
+    # No options: the report always covers every tag in the store and always
+    # lands at output/report.html. argparse is kept for --help.
+    argparse.ArgumentParser(
+        description=f"Build the standalone drift report ({OUT}) from the snapshot store."
+    ).parse_args()
+    data = build_report()
+    total = sum(len(v) for v in data.values())
+    print(f"wrote {OUT} from {total} snapshots across {len(data)} tags")
 
 
 if __name__ == "__main__":

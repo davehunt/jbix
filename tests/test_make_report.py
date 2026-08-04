@@ -1,4 +1,4 @@
-"""Tests for make_report.py — broken-link rendering + --group dispatch."""
+"""Tests for make_report.py — fragment rendering, routing, and CLI scoping."""
 
 import sys
 
@@ -93,23 +93,23 @@ def test_section_carries_drift_rows():
     assert _diff_section()["drift_rows"] == _DIFF["rows"]
 
 
-def test_stats_links_to_detail_when_url_set():
-    out = make_report._stats(_diff_section(), detail_url="tags/fxpe.html")
-    assert "tags/fxpe.html#drift" in out
-    assert "tags/fxpe.html#broken" in out
+def test_stats_links_to_detail_when_tag_set():
+    out = make_report._stats(_diff_section(), "fxpe")
+    assert 'href="#/tag/fxpe/drift"' in out
+    assert 'href="#/tag/fxpe/broken"' in out
 
 
-def test_stats_no_detail_links_when_url_absent():
+def test_stats_no_detail_links_when_tag_absent():
     out = make_report._stats(_diff_section())
-    assert "#drift" not in out and "#broken" not in out
+    assert "/tag/" not in out   # no per-tag view to deep-link into
 
 
 def test_tag_card_has_detail_link_and_no_broken_table():
-    card = make_report.tag_card("fxpe", _diff_section(), None, "tags/fxpe.html")
+    card = make_report.tag_card("fxpe", _diff_section(), None)
     assert "View tag report" in card
-    # the bottom link goes to the page top, not the #drift anchor
-    assert '<a class="detail-link" href="tags/fxpe.html">View tag report' in card
-    assert "fields broken" not in card  # broken table moved to the detail page
+    # the bottom link goes to the view top, not the #drift-<tag> anchor
+    assert '<a class="detail-link" href="#/tag/fxpe">View tag report' in card
+    assert "fields broken" not in card  # broken table moved to the detail view
 
 
 def test_tag_card_renders_all_drifted_fields():
@@ -118,7 +118,7 @@ def test_tag_card_renders_all_drifted_fields():
             "fields": [{"field": "issuetype", "name": "type", "n": 1, "pct": 0.5},
                        {"field": "remote_links", "name": "remote_links", "n": 1, "pct": 0.5}]}
     sec = make_report._section("[fxpe] → FXPE", None, None, diff)
-    card = make_report.tag_card("fxpe", sec, None, "tags/fxpe.html")
+    card = make_report.tag_card("fxpe", sec, None)
     assert "<td>type</td>" in card
     assert "<td>remote_links</td>" in card
 
@@ -162,34 +162,32 @@ def test_daily_drift_latest_run_without_diff_is_none():
     assert make_report._daily_drift(entries) == {date(2026, 7, 14): None}
 
 
-def test_site_nav_links_full_and_groups():
-    nav = make_report._site_nav(["performance", "genai"], active="full")
-    assert 'href="index.html"' not in nav        # 'full' is the active page → plain text
-    assert "nav-here" in nav and "Full Report" in nav
-    assert 'href="performance.html"' in nav and 'href="genai.html"' in nav
-
-
-def test_site_nav_prefix_for_tag_pages():
-    nav = make_report._site_nav(["performance"], prefix="../")
-    assert 'href="../index.html"' in nav and 'href="../performance.html"' in nav
+def test_site_nav_links_full_groups_and_tags():
+    nav = make_report._site_nav(["performance", "genai"], ["fp", "fxpe"])
+    assert 'href="#/"' in nav and "Full Report" in nav
+    assert 'href="#/group/performance"' in nav and 'href="#/group/genai"' in nav
+    assert 'href="#/tag/fp"' in nav and 'href="#/tag/fxpe"' in nav
+    # the router marks the active link at runtime, via data-view
+    assert 'data-view="view-full"' in nav
+    assert "nav-here" not in nav
 
 
 def test_site_nav_uses_display_names():
-    nav = make_report._site_nav(["deng"], names={"deng": "Data Engineering"})
-    assert ">Data Engineering</a>" in nav   # label is the display name
-    assert 'href="deng.html"' in nav        # href still uses the group key
+    nav = make_report._site_nav(["deng"], [], names={"deng": "Data Engineering"})
+    assert ">Data Engineering</a>" in nav        # label is the display name
+    assert 'href="#/group/deng"' in nav          # route still uses the group key
 
 
 def test_group_card_uses_display_name():
     card = make_report.group_card("deng", _diff_section(), "Data Engineering")
     assert ">Data Engineering</a>" in card
-    assert 'href="deng.html"' in card       # link + filename keyed by group slug
+    assert 'href="#/group/deng"' in card         # link keyed by group slug
 
 
-def test_group_card_links_to_group_report():
+def test_group_card_links_to_group_view():
     sec = _diff_section()
     card = make_report.group_card("performance", sec)
-    assert 'href="performance.html"' in card
+    assert 'href="#/group/performance"' in card
     assert "View group report" in card
     assert 'class="card group"' in card                  # visually distinct
     assert "mini-pie" not in card                         # no pies in group cards
@@ -205,67 +203,64 @@ _ENTRY = {
 }
 
 
-def test_render_tag_detail_has_sections_and_nav():
+def test_tag_detail_view_has_anchored_sections():
     sec = make_report._section_from_entry("fxpe", _ENTRY)
-    nav = make_report._site_nav(["perf"], prefix="../")
-    page = make_report.render_tag_detail("fxpe", [_ENTRY], sec, nav_html=nav)
-    assert 'id="drift"' in page and 'id="broken"' in page
-    assert "JBI Sync Drift Report" in page  # consistent h1
-    assert "card featured" in page          # totals-style featured card
-    assert 'href="../index.html"' in page   # nav back to full report
-    assert ">111<" in page                  # drift row (no "bug " prefix)
-    assert "AIACT-19" in page               # broken-links row rendered in full
+    view, payload = make_report.tag_detail_view("fxpe", [_ENTRY], sec)
+    assert 'id="view-tag-fxpe"' in view                  # router target
+    assert 'id="drift-fxpe"' in view and 'id="broken-fxpe"' in view
+    assert "card featured" in view                       # totals-style featured card
+    assert 'href="#/"' in view                           # back to the full report
+    assert ">111<" in view                               # drift row (no "bug " prefix)
+    assert "AIACT-19" in view                            # broken-links row in full
+    assert payload["pies"]["fxpe"]["linked"] == 3        # chart payload for this view
 
 
-def test_build_site_writes_index_group_and_tag_pages(tmp_path, monkeypatch):
+_ENTRY2 = {**_ENTRY, "ts": "2026-06-26T10:00:00", "jira_project": "FP"}
+
+
+def test_build_report_writes_one_file_with_every_view(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(make_report, "load_snapshots", lambda tags=None: {"fxpe": [_ENTRY]})
+    monkeypatch.setattr(make_report, "load_snapshots",
+                        lambda: {"fxpe": [_ENTRY], "fp": [_ENTRY2]})
+    monkeypatch.setattr(make_report, "load_groups",
+                        lambda: {"perf": ["fxpe"], "other": ["fp"]})
+    monkeypatch.setattr(make_report, "group_display_names", lambda: {"perf": "Performance"})
+    make_report.build_report()
+    page = (tmp_path / "output" / "report.html").read_text()
+    for view_id in ("view-full", "view-group-perf", "view-group-other",
+                    "view-tag-fxpe", "view-tag-fp"):
+        assert f'id="{view_id}"' in page                 # every view in one file
+        assert f'"{view_id}"' in page                    # ...and its chart payload
+    assert "Per-group breakdown" in page and "View group report" in page
+    assert 'href="#/tag/fxpe/drift"' in page             # card deep link
+    assert "JBI Sync Drift Report" in page               # single h1
+    assert "function showView" in page                   # hash router
+
+
+def test_single_group_covering_all_tags_gets_no_group_view(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(make_report, "load_snapshots", lambda: {"fxpe": [_ENTRY]})
     monkeypatch.setattr(make_report, "load_groups", lambda: {"perf": ["fxpe"]})
-    make_report.build_site()
-    assert (tmp_path / "reports" / "index.html").is_file()
-    assert (tmp_path / "reports" / "perf.html").is_file()
-    assert (tmp_path / "reports" / "tags" / "fxpe.html").is_file()
-    index = (tmp_path / "reports" / "index.html").read_text()
-    assert 'href="perf.html"' in index      # site nav + per-group breakdown
-    assert "Per-group breakdown" in index
-    assert "View group report" in index
-    assert 'href="tags/fxpe.html#drift"' in index  # card detail link
+    make_report.build_report()
+    page = (tmp_path / "output" / "report.html").read_text()
+    assert 'id="view-group-perf"' not in page  # would duplicate the full report
+    assert "Per-group breakdown" not in page
 
 
-class TestGroupDispatch:
-    @pytest.fixture
-    def captured(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(make_report, "generate", lambda tags=None, output=None: calls.append((tags, output)) or {})
-        monkeypatch.setattr(make_report, "expand_groups",
-                            lambda names: [f"{n}-tag" for n in names])
-        return calls
+def test_no_snapshots_exits(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(make_report, "load_snapshots", lambda: {})
+    with pytest.raises(SystemExit):
+        make_report.build_report()
 
-    def _run(self, monkeypatch, argv):
-        monkeypatch.setattr(sys, "argv", ["make_report.py", *argv])
+
+def test_main_takes_no_scoping_options(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(make_report, "load_snapshots", lambda: {"fxpe": [_ENTRY]})
+    monkeypatch.setattr(make_report, "load_groups", lambda: {})
+    monkeypatch.setattr(sys, "argv", ["make_report.py"])
+    make_report.main()
+    assert "output/report.html" in capsys.readouterr().out
+    monkeypatch.setattr(sys, "argv", ["make_report.py", "--tags", "fxpe"])
+    with pytest.raises(SystemExit):
         make_report.main()
-
-    def test_single_group_default_name(self, monkeypatch, captured):
-        self._run(monkeypatch, ["--group", "performance"])
-        assert captured == [(["performance-tag"], "reports/performance.html")]
-
-    def test_multiple_groups_one_file_each(self, monkeypatch, captured):
-        self._run(monkeypatch, ["--group", "performance", "genai"])
-        assert captured == [(["performance-tag"], "reports/performance.html"),
-                            (["genai-tag"], "reports/genai.html")]
-
-    def test_single_group_output_override(self, monkeypatch, captured):
-        self._run(monkeypatch, ["--group", "performance", "-o", "x.html"])
-        assert captured == [(["performance-tag"], "x.html")]
-
-    def test_tags_only(self, monkeypatch, captured):
-        self._run(monkeypatch, ["--tags", "fp", "fxp"])
-        assert captured == [(["fp", "fxp"], "reports/index.html")]
-
-    def test_group_and_tags_rejected(self, monkeypatch, captured):
-        with pytest.raises(SystemExit):
-            self._run(monkeypatch, ["--group", "performance", "--tags", "sp3"])
-
-    def test_output_with_multiple_groups_rejected(self, monkeypatch, captured):
-        with pytest.raises(SystemExit):
-            self._run(monkeypatch, ["--group", "performance", "genai", "-o", "x.html"])

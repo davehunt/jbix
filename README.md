@@ -21,7 +21,7 @@ python jbix.py --tags fxp fxpe --mode preview
 # Every whiteboard tag in the JBI config
 python jbix.py --all-tags --mode check
 
-# A named tag group (see groups.yaml) — regenerates the whole reports/ site
+# A named tag group (see groups.yaml) — regenerates output/report.html
 python jbix.py --group perf --mode check
 
 # Apply changes
@@ -119,7 +119,7 @@ fxp:
 
 ### `groups.yaml`
 
-Named shortcuts for sets of tags, used by `--group` in both `jbix.py` and `make_report.py`:
+Named shortcuts for sets of tags, used by `jbix.py --group` and rendered as group views in the report:
 
 ```yaml
 perf:
@@ -132,7 +132,7 @@ genai:
 deng: [dataplatform, dataquality, fog-migration, glean-sdk-jira]
 ```
 
-`--group perf` expands to that group's tags. Multiple groups (`--group perf genai`) and combining with `--tags` are supported (de-duplicated union). After a capturing run the whole `reports/` site is regenerated, including a scoped `reports/<group>.html` for every group.
+`--group perf` expands to that group's tags. Multiple groups (`--group perf genai`) and combining with `--tags` are supported (de-duplicated union). After a capturing run `output/report.html` is regenerated in full — every group in `groups.yaml` gets its own summary view regardless of which tags were processed.
 
 ## Caching
 
@@ -163,20 +163,28 @@ Fuzzy link candidate matching (`--link-candidates`) writes `output/link_candidat
 
 ## Drift report
 
-Every forward run records a compact per-tag snapshot to `snapshots/<tag>.jsonl` and (unless `--no-report`) regenerates the self-contained `reports/` site covering the latest snapshot of every tag:
+Every forward run records a compact per-tag snapshot to `snapshots/<tag>.jsonl` and (unless `--no-report`) regenerates `output/report.html` — **one standalone file** covering the latest snapshot of every tag, holding all of these views:
 
-- `reports/index.html` — full report, with a "Group views" nav to each group summary
-- `reports/<group>.html` — one summary per group in `groups.yaml`
-- `reports/tags/<tag>.html` — per-tag drilldown: every drifted field (bug/Jira links + current → should-be values, for hand repairs) and the full broken-links table
+- the full report over all tags, with a per-group breakdown
+- one summary per group in `groups.yaml`
+- one drilldown per tag: every drifted field (bug/Jira links + current → should-be values, for hand repairs) and the full broken-links table
 
-Summary cards show coverage and drift over time; the "fields out of sync" and "broken links" numbers link into the tag page's detail sections. Rebuild on demand with:
+Views are switched in-page by a hash router, so the file can be shared or opened from disk as-is (Chart.js is the only external asset, loaded from CDN):
+
+| Route | View |
+|---|---|
+| `#/` | full report |
+| `#/group/perf` | group summary |
+| `#/tag/fxpe` | tag drilldown |
+| `#/tag/fxpe/drift`, `#/tag/fxpe/broken` | straight to a tag's drift / broken-link table |
+
+Summary cards show coverage and drift over time; the "fields out of sync" and "broken links" numbers deep-link into the tag's detail sections. Rebuild on demand with:
 
 ```bash
-python make_report.py                          # whole site → reports/
-python make_report.py --tags fxp fxpe          # scoped reports/index.html (overwrites the full index)
-python make_report.py --group perf             # group → reports/perf.html
-python make_report.py --group perf genai        # one group file each
+python make_report.py    # every tag in snapshots/ → output/report.html
 ```
+
+It takes no options: the report always covers the whole store and always lands at `output/report.html`, so a run never leaves a partial or stale variant behind.
 
 ## Testing
 
@@ -194,7 +202,7 @@ Issues and pull requests are welcome. Before opening a PR, please run `uv run ru
 
 ```
 jbix.py               # CLI: tag-driven sync, reverse sync, health check
-make_report.py       # Build the reports/ site from the snapshots/ store
+make_report.py       # Build the standalone output/report.html from snapshots/
 tags.yaml            # Component lists per whiteboard tag (for health check)
 groups.yaml          # Named tag groups (display name + tags) for --group
 jbix/
@@ -213,7 +221,7 @@ tests/               # pytest suite (one test_*.py per module)
 ```
 
 Generated at runtime (all gitignored): `cache/` (data + JBI config), `snapshots/`
-(drift history), `reports/` (HTML site), `output/` (audit/broken-link/candidate CSVs).
+(drift history), `output/` (`report.html` + audit/broken-link/candidate CSVs).
 
 ## License
 
