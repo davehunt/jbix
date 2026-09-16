@@ -52,7 +52,7 @@ from jbix.config import (
     get_linked_project_excludes,
     get_mappings,
 )
-from jbix.constants import Colors
+from jbix.constants import JIRA_SEVERITY_FIELD, Colors
 from jbix.groups import resolve_tags
 from jbix.health import (
     aggregate_metrics,
@@ -110,7 +110,7 @@ BZ_SEE_ALSO_BATCH_SIZE = 50
 
 # Jira fields fetched for each issue — limits response payload
 JIRA_FIELDS = ",".join([
-    "assignee", "components", "customfield_10319", "customfield_10441",
+    "assignee", "components", JIRA_SEVERITY_FIELD, "customfield_10441",
     "duedate", "issuetype", "issuelinks", "labels", "priority", "resolution",
     "status", "summary", "timeoriginalestimate",
 ])
@@ -441,7 +441,7 @@ def _fetch_jira(jira_project: str, jira: JiraClient) -> dict:
             "links": issue.fields.issuelinks,
             "priority": getattr(issue.fields.priority, "name", None),
             "resolution": getattr(issue.fields.resolution, "name", None),
-            "severity": issue.fields.customfield_10319,
+            "severity": getattr(issue.fields, JIRA_SEVERITY_FIELD, None),
             "status": getattr(issue.fields.status, "name", None),
             "issuetype": issue.fields.issuetype.name if issue.fields.issuetype else None,
             "summary": issue.fields.summary,
