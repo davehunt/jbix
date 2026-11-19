@@ -64,6 +64,20 @@ def test_expand_unknown_group_exits():
     assert "bogus" in str(e.value) and "performance" in str(e.value)
 
 
+def test_groups_file_defaults_to_the_data_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(groups, "GROUPS_PATH", None)
+    monkeypatch.setenv("JBIX_DATA_DIR", str(tmp_path))
+    (tmp_path / "groups.yaml").write_text("perf: [fp]\n")
+    assert groups.load_groups() == {"perf": ["fp"]}
+
+
+def test_groups_file_can_be_passed(tmp_path):
+    p = tmp_path / "other.yaml"
+    p.write_text("x:\n  name: Ex\n  tags: [a]\n")
+    assert groups.load_groups(p) == {"x": ["a"]}
+    assert groups.group_display_names(p) == {"x": "Ex"}
+
+
 def test_resolve_tags_union_no_dupes():
     # explicit fp + performance group (which also has fp) → fp once, sp3 appended
     assert resolve_tags(["fp", "sp3"], ["performance"]) == ["fp", "sp3", "fxp", "fxpe", "pcf"]
