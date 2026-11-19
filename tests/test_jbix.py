@@ -459,6 +459,7 @@ class TestBugzillaResultsToDict:
         b.depends_on = []
         b.dupe_of = None
         b.estimated_time = 4.0
+        b.groups = []
         b.keywords = ["perf"]
         b.priority = "P2"
         b.product = "Firefox"
@@ -477,6 +478,14 @@ class TestBugzillaResultsToDict:
         assert bug["summary"] == "Test bug"
         assert bug["url"] == "https://bugzil.la/111"
         assert bug["id"] == 111
+
+    def test_flags_bugs_in_a_security_group_as_restricted(self):
+        public = self._make_raw_bug(111)
+        restricted = self._make_raw_bug(222)
+        restricted.groups = ["mozilla-employee-confidential"]
+        result = jbix_main._bugzilla_results_to_dict([public, restricted], "FXP", [])
+        assert result[111]["restricted"] is False
+        assert result[222]["restricted"] is True
 
     def test_extracts_jira_keys_from_see_also(self):
         raw = self._make_raw_bug(111, "FXP-100")
@@ -640,6 +649,19 @@ class TestFindBrokenLinks:
         assert jbix_main.find_broken_links(
             bugzilla_bugs, dropped, c, {}, tag="fxp", jira_issues={}, bugz=MagicMock()) == []
 
+    def test_restricted_bugs_are_left_out(self):
+        bugzilla_bugs = {
+            111: {"id": 111, "url": "https://bugzil.la/111", "restricted": True,
+                  "see_also_jira_keys": ["DEAD-9"]},
+            222: {"id": 222, "url": "https://bugzil.la/222",
+                  "see_also_jira_keys": ["DEAD-8"]},
+        }
+        dropped = [(111, "https://bugzil.la/111", "FXP-999")]
+        rows = jbix_main.find_broken_links(
+            bugzilla_bugs, dropped, self._client([]), {},
+            tag="fxp", jira_issues={}, bugz=MagicMock())
+        assert {(r["bug_id"], r["jira_key"]) for r in rows} == {(222, "DEAD-8")}
+
     def test_skips_external_bugs_and_clean_returns_empty(self):
         bugzilla_bugs = {
             999: {"id": 999, "external": True, "jira": {"X-1": {}}},
@@ -670,13 +692,21 @@ class TestLabelMatchesTag:
 class TestFindOrphanedIssues:
     _PREFIX = "https://mozilla-hub.atlassian.net/browse/"
 
-    def _bug(self, bug_id, whiteboard, see_also_keys):
+    def _bug(self, bug_id, whiteboard, see_also_keys, groups=()):
         """Mock bug whose see_also holds full browse URLs for the given keys."""
         return MagicMock(
             id=bug_id,
             whiteboard=whiteboard,
             see_also=[f"{self._PREFIX}{k}" for k in see_also_keys],
+            groups=list(groups),
         )
+
+    def test_restricted_bug_orphan_is_left_out(self):
+        jira_issues = {"FXPE-10": {"labels": ["bugzilla", "fxpe"]}}
+        bugz = MagicMock()
+        bugz.client.query.return_value = [
+            self._bug(2008619, "[necko-triaged]", ["FXPE-10"], groups=["core-security"])]
+        assert jbix_main.find_orphaned_issues("fxpe", {}, jira_issues, bugz) == []
 
     def test_whiteboard_removed_orphan(self):
         bugzilla_bugs = {1: {"id": 1, "jira": {"FXPE-5": {}}}}  # linked, not orphan
@@ -730,7 +760,7 @@ class TestFindOrphanedIssues:
         jira_issues = {"FXPE-10": {"labels": ["bugzilla", "fxpe"]}}
         bugz = MagicMock()
         bugz.client.query.return_value = [
-            MagicMock(id=2008619, whiteboard="[necko-triaged]",
+            MagicMock(id=2008619, whiteboard="[necko-triaged]", groups=[],
                       see_also=["https://jira.mozilla.com/browse/FXPE-10"])]
         rows = jbix_main.find_orphaned_issues("fxpe", {}, jira_issues, bugz)
         assert rows[0]["jira_key"] == "FXPE-10"
@@ -767,7 +797,7 @@ class TestFindOrphanedIssues:
         assert q["f2"] == "see_also" and q["o2"] == "substring"
         assert q["v2"] == "/browse/FXPE-1"  # host-agnostic: matches either host
         assert q["f3"] == "CP"
-        assert q["include_fields"] == ["id", "whiteboard", "see_also"]
+        assert q["include_fields"] == ["id", "whiteboard", "see_also", "groups"]
 
 
 class TestWriteBrokenLinksCsv:

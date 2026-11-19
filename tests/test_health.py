@@ -394,6 +394,17 @@ class TestRunDiffCheck:
                            "field": "summary", "before": "old", "after": "new"}
         assert rows[1]["field"] == "severity"  # customfield mapped to display name
 
+    def test_restricted_bug_rows_are_withheld_but_still_counted(self):
+        # before/after can carry a restricted bug's summary, so its rows stay out
+        bugs = _make_bugs(3)
+        bugs[2]["restricted"] = True
+        m = _diff_metrics(
+            [_make_update(1, "FXP-1", "summary"), _make_update(2, "FXP-2", "summary")],
+            bugs, {"summary"},
+        )
+        assert [r["bug_url"] for r in m["rows"]] == ["https://bugzil.la/1"]
+        assert m["drifted_pairs"] == 2
+
     def test_severity_display_name(self, capsys):
         from jbix.constants import JIRA_SEVERITY_FIELD
         updates = [_make_update(1, "FXP-1", JIRA_SEVERITY_FIELD)]
