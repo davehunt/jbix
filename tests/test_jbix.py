@@ -68,6 +68,11 @@ class TestBuildParser:
         assert parser.parse_args(["--all-tags"]).all_tags is True
         assert parser.parse_args(["--tags", "fxp"]).all_tags is False
 
+    def test_data_dir_flag(self):
+        parser = jbix_main.build_parser()
+        assert str(parser.parse_args(["--tags", "fp", "--data-dir", "/d"]).data_dir) == "/d"
+        assert parser.parse_args(["--tags", "fp"]).data_dir is None
+
     def test_exclude_tags_flag(self):
         parser = jbix_main.build_parser()
         args = parser.parse_args(["--all-tags", "--exclude-tags", "bz-ffx-core", "jbi-prodtest"])

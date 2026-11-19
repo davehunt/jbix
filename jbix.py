@@ -38,6 +38,7 @@ import yaml
 from jira.exceptions import JIRAError
 
 import jbix.sync as sync_fns
+from jbix import paths
 from jbix.bugzilla import (
     BUGZILLA_API_KEY,
     BZ_FETCH_BATCH_SIZE,
@@ -96,7 +97,7 @@ def _jira_key_from_link(link) -> str | None:
     return None
 BUGZILLA_URL = os.getenv("BUGZILLA_URL", "bugzilla.mozilla.org")
 _BUGZILLA_BUG_URL_RE = re.compile(rf"https?://{re.escape(BUGZILLA_URL)}/show_bug\.cgi\?id=(\d+)")
-TAGS_YAML = pathlib.Path(__file__).parent / "tags.yaml"
+TAGS_YAML: pathlib.Path | None = None  # None means the data directory's tags.yaml
 OUTPUT_DIR = pathlib.Path("output")  # dir for updates / broken-link / link-candidate CSVs
 CACHE_TTL = 60 * 60  # seconds — cached data expires after 1 hour
 
@@ -157,9 +158,10 @@ REVERSE_SUPPORTED: frozenset[str] = frozenset({"assignee", "summary", "priority"
 
 def load_tags() -> dict:
     """Load tags.yaml (component lists keyed by whiteboard tag)."""
-    if not TAGS_YAML.exists():
+    path = TAGS_YAML or paths.tags_file()
+    if not path.exists():
         return {}
-    with open(TAGS_YAML) as f:
+    with open(path) as f:
         return yaml.safe_load(f) or {}
 
 
@@ -246,6 +248,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--refresh", action="store_true", default=False,
         help="Bypass the local data cache and fetch fresh data from Bugzilla and Jira",
+    )
+    parser.add_argument(
+        "--data-dir", type=pathlib.Path, metavar="DIR",
+        help=f"Directory holding snapshots/, latest/, groups.yaml and tags.yaml "
+             f"(default: ${paths.DATA_DIR_ENV}, else the current directory)",
     )
     parser.add_argument(
         "--debug", action="store_true", default=False,
@@ -1194,6 +1201,9 @@ def _get_components_for_tag(tag: str, tags: dict) -> list[str] | None:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    if args.data_dir:
+        # Everything that resolves a data path reads this when called (jbix.paths).
+        os.environ[paths.DATA_DIR_ENV] = str(args.data_dir)
 
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
