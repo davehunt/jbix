@@ -39,6 +39,7 @@ from jira.exceptions import JIRAError
 
 import jbix.sync as sync_fns
 from jbix.bugzilla import (
+    BUGZILLA_API_KEY,
     BZ_FETCH_BATCH_SIZE,
     BZ_ID_BATCH_SIZE,
     BugzillaClient,
@@ -323,6 +324,23 @@ def show_sync_plan(args: argparse.Namespace, tag_configs: list[tuple]) -> None:
 # ---------------------------------------------------------------------------
 # Cache helpers
 # ---------------------------------------------------------------------------
+
+def check_bugzilla_access(mode: str, api_key: str | None = None) -> None:
+    """Allow an anonymous Bugzilla client in check mode only, saying so; exit otherwise.
+
+    Anonymous queries return public bugs only, which is what a published drift report
+    wants: restricted bugs never reach a snapshot. Every other mode exists to change
+    data, so it needs to see every bug, and --mode apply would otherwise fail on its
+    first Bugzilla write rather than before it starts.
+    """
+    if (api_key if api_key is not None else BUGZILLA_API_KEY):
+        return
+    if mode == "check":
+        print(f"{Colors.YELLOW}Bugzilla: anonymous, public bugs only{Colors.RESET}")
+        return
+    logger.error(f"--mode {mode} needs BUGZILLA_API_KEY; only --mode check can run anonymously.")
+    sys.exit(1)
+
 
 def _cache_is_fresh(path: pathlib.Path) -> bool:
     return path.is_file() and (time.time() - path.stat().st_mtime) < CACHE_TTL
@@ -1208,6 +1226,7 @@ def main() -> None:
         logger.error("No valid tags found in JBI config. Exiting.")
         sys.exit(1)
 
+    check_bugzilla_access(args.mode)
     show_sync_plan(args, tag_configs)
 
     is_check = args.mode == "check"

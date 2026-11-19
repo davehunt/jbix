@@ -95,6 +95,8 @@ JIRA_LEGACY_URL=https://jira.mozilla.com
 PEOPLE_API_TOKEN=...
 ```
 
+`BUGZILLA_API_KEY` is optional in `--mode check`, the default. Without it Bugzilla is queried anonymously, which returns public bugs only, so restricted bugs never reach a snapshot or the drift report; the run says so at the start. Every other mode needs the key and refuses to start without it.
+
 `JIRA_LEGACY_URL` (default `https://jira.mozilla.com`) makes the tool recognize legacy-host `see_also` links as linked, so they count toward linkage and aren't mis-reported as broken/orphaned. Set it empty to recognize only `JIRA_URL`.
 
 `PEOPLE_API_TOKEN` is a Bearer token from [people.mozilla.org](https://people.mozilla.org). When set, `sync_assignee` looks up unmapped Bugzilla email addresses against Mozilla's people directory to find the canonical work email for Jira. Explicit overrides in `assignee_map.yaml` take precedence (see below).
