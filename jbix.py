@@ -411,6 +411,7 @@ def _fetch_bugzilla(tag: str, bugz: BugzillaClient) -> list:
             "dupe_of",
             "duplicates",
             "estimated_time",
+            "groups",
             "keywords",
             "priority",
             "product",
@@ -569,6 +570,9 @@ def _bugzilla_results_to_dict(bugzilla_results: list, jira_project: str, exclude
             "keywords": b.keywords,
             "regressed_by": list(b.regressed_by) if hasattr(b, "regressed_by") else [],
             "regressions": list(b.regressions) if hasattr(b, "regressions") else [],
+            # In any security group: visible only with a key, and kept out of the
+            # report's per-bug rows (see _diff_metrics and find_broken_links).
+            "restricted": bool(getattr(b, "groups", None)),
             "see_also_bugs": see_also_bugs,
             "see_also_jira_keys": _exclude_projects(see_also_jira_keys, excludes),
             "priority": b.priority,
@@ -760,7 +764,7 @@ def _find_bugs_via_see_also(jira_keys: list[str], bugz: BugzillaClient) -> dict[
     found: dict[str, dict] = {}
     for i in range(0, len(keys), BZ_SEE_ALSO_BATCH_SIZE):
         chunk = keys[i:i + BZ_SEE_ALSO_BATCH_SIZE]
-        query: dict = {"include_fields": ["id", "whiteboard", "see_also"]}
+        query: dict = {"include_fields": ["id", "whiteboard", "see_also", "groups"]}
         n = 1
         query[f"f{n}"], query[f"j{n}"] = "OP", "OR"
         n += 1
@@ -780,7 +784,11 @@ def _find_bugs_via_see_also(jira_keys: list[str], bugz: BugzillaClient) -> dict[
             matches = [b for b in bugs if _see_also_exact_match(b, key)]
             if matches:
                 b = min(matches, key=lambda x: x.id)
-                found[key] = {"id": b.id, "whiteboard": b.whiteboard}
+                found[key] = {
+                    "id": b.id,
+                    "whiteboard": b.whiteboard,
+                    "restricted": bool(getattr(b, "groups", None)),
+                }
     return found
 
 
@@ -811,6 +819,8 @@ def find_orphaned_issues(
     rows = []
     for key in candidates:
         bug = found.get(key)
+        if bug is not None and bug.get("restricted"):
+            continue  # a restricted bug's id stays out of the report
         if bug is None:
             bug_id, bug_url, reason = "", "", "stale-label"
         else:
@@ -847,11 +857,14 @@ def find_broken_links(
 
     ``jira→bug`` rows: orphaned Jira issues from :func:`find_orphaned_issues`.
     """
+    # Restricted bugs are left out entirely: a row would publish the bug's id.
+    restricted = {b["id"] for b in bugzilla_bugs.values() if b.get("restricted")}
     key_to_bugs: dict[str, list[tuple[int, str]]] = defaultdict(list)
     for bug_id, bug_url, key in dropped:
-        key_to_bugs[key].append((bug_id, bug_url))
+        if bug_id not in restricted:
+            key_to_bugs[key].append((bug_id, bug_url))
     for bug_info in bugzilla_bugs.values():
-        if bug_info.get("external"):
+        if bug_info.get("external") or bug_info.get("restricted"):
             continue
         for key in bug_info.get("see_also_jira_keys") or []:
             key_to_bugs[key].append((bug_info["id"], bug_info["url"]))

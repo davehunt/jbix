@@ -437,7 +437,10 @@ def _diff_metrics(updates: list[dict], bugzilla_bugs: dict, enabled: set[str]) -
 
     drifted_pairs = len({pair for pairs in seen.values() for pair in pairs})
 
-    # Per-field repair rows (one per update) for the per-tag detail report.
+    # Per-field repair rows (one per update) for the per-tag detail report. A
+    # restricted bug's rows are left out, since before/after can carry its summary;
+    # it still counts towards the totals above, which reveal nothing about it.
+    restricted = {b["url"] for b in bugzilla_bugs.values() if b.get("restricted")}
     rows = [
         {
             "bug_url": u["bug_url"],
@@ -447,6 +450,7 @@ def _diff_metrics(updates: list[dict], bugzilla_bugs: dict, enabled: set[str]) -
             "after": "" if u["jira_after"] is None else str(u["jira_after"]),
         }
         for u in updates
+        if u["bug_url"] not in restricted
     ]
 
     return {
