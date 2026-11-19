@@ -278,6 +278,112 @@ class TestCacheStatus:
 
 
 # ---------------------------------------------------------------------------
+# Per-project Jira cache and in-run memo
+# ---------------------------------------------------------------------------
+
+
+class TestJiraProjectCache:
+    ISSUES = {"DENG-1": {"key": "DENG-1", "resolution": None}}
+
+    @pytest.fixture(autouse=True)
+    def _in_tmp(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+    def test_cache_is_keyed_by_project_not_tag(self):
+        assert jbix_main._jira_cache_path("DENG") == pathlib.Path("cache", "jira_DENG.pickle")
+
+    def test_nothing_cached_means_fetch(self):
+        issues, status, fetched = jbix_main._load_jira_issues("DENG", {}, refresh=False)
+        assert issues is None
+        assert status == "miss"
+        assert fetched is True
+
+    def test_second_tag_on_a_project_reuses_this_runs_fetch(self):
+        memo: dict = {}
+        jbix_main._store_jira_issues("DENG", self.ISSUES, memo, "dataplatform", fetched=True)
+        issues, status, fetched = jbix_main._load_jira_issues("DENG", memo, refresh=True)
+        assert issues == self.ISSUES
+        assert status == "shared (dataplatform)"
+        assert fetched is True  # still new data, so the sibling tag records a snapshot
+
+    def test_each_tag_gets_its_own_copy(self):
+        # sync_status writes jira_info["resolution"] in place, even in check mode
+        memo: dict = {}
+        jbix_main._store_jira_issues("DENG", self.ISSUES, memo, "dataplatform", fetched=True)
+        first, _, _ = jbix_main._load_jira_issues("DENG", memo, refresh=False)
+        first["DENG-1"]["resolution"] = "Fixed"
+        second, _, _ = jbix_main._load_jira_issues("DENG", memo, refresh=False)
+        assert second["DENG-1"]["resolution"] is None
+
+    def test_fresh_cache_file_is_used_and_not_counted_as_fetched(self):
+        jbix_main._store_jira_issues("DENG", self.ISSUES, {}, "dataplatform", fetched=True)
+        memo: dict = {}
+        issues, status, fetched = jbix_main._load_jira_issues("DENG", memo, refresh=False)
+        assert issues == self.ISSUES
+        assert status.startswith("hit")
+        assert fetched is False
+        assert "DENG" in memo
+
+    def test_refresh_bypasses_the_file(self):
+        jbix_main._store_jira_issues("DENG", self.ISSUES, {}, "dataplatform", fetched=True)
+        issues, status, fetched = jbix_main._load_jira_issues("DENG", {}, refresh=True)
+        assert issues is None
+        assert status.startswith("forced")
+        assert fetched is True
+
+    def test_expired_file_means_fetch(self):
+        jbix_main._store_jira_issues("DENG", self.ISSUES, {}, "dataplatform", fetched=True)
+        old = time.time() - jbix_main.CACHE_TTL - 60
+        os.utime(jbix_main._jira_cache_path("DENG"), (old, old))
+        issues, _, _ = jbix_main._load_jira_issues("DENG", {}, refresh=False)
+        assert issues is None
+
+    def test_invalidate_drops_memo_and_file(self):
+        memo: dict = {}
+        jbix_main._store_jira_issues("DENG", self.ISSUES, memo, "dataplatform", fetched=True)
+        jbix_main._invalidate_jira_issues("DENG", memo)
+        assert memo == {}
+        assert not jbix_main._jira_cache_path("DENG").exists()
+        issues, _, _ = jbix_main._load_jira_issues("DENG", memo, refresh=False)
+        assert issues is None
+
+    def test_invalidate_without_cache_is_harmless(self):
+        jbix_main._invalidate_jira_issues("DENG", {})
+
+
+class TestFetchRemoteLinks:
+    @staticmethod
+    def _bugz_data(*keys):
+        return {1: {"jira": {k: {} for k in keys}}}
+
+    def test_fetches_only_paired_keys_without_links(self):
+        jira = MagicMock()
+        jira.client.remote_links.return_value = ["link"]
+        jira_issues = {
+            "DENG-1": {"remote_links": ["cached"]},  # fetched earlier for a sibling tag
+            "DENG-2": {},
+            "DENG-3": {},  # not paired with any bug
+        }
+        with patch.object(jbix_main.time, "sleep"):
+            fetched = jbix_main._fetch_remote_links_parallel(
+                jira_issues, self._bugz_data("DENG-1", "DENG-2", "DENG-9"), jira
+            )
+        assert fetched == 1
+        jira.client.remote_links.assert_called_once_with("DENG-2")
+        assert jira_issues["DENG-1"]["remote_links"] == ["cached"]
+        assert jira_issues["DENG-2"]["remote_links"] == ["link"]
+        assert "remote_links" not in jira_issues["DENG-3"]
+
+    def test_nothing_to_fetch_returns_zero(self):
+        jira = MagicMock()
+        fetched = jbix_main._fetch_remote_links_parallel(
+            {"DENG-1": {"remote_links": []}}, self._bugz_data("DENG-1"), jira
+        )
+        assert fetched == 0
+        jira.client.remote_links.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # _jira_key_from_link
 # ---------------------------------------------------------------------------
 

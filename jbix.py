@@ -452,6 +452,53 @@ def _fetch_jira(jira_project: str, jira: JiraClient) -> dict:
     return jira_issues
 
 
+# Several whiteboard tags can share one Jira project (DENG has four), and
+# _fetch_jira fetches the whole project regardless of tag. So the Jira side is
+# cached per project, and within a run a project is fetched at most once: the
+# first tag to need it fetches it, and later tags get it from the memo.
+#
+# The memo holds the pickled bytes, not the dict, and every tag unpickles its
+# own copy. Sync functions write to jira_info in place (sync_status sets
+# "resolution" even in check mode), and a bug carrying two tags on the same
+# project is processed once per tag, so a shared dict would let one tag's
+# writes hide drift from the next.
+
+def _jira_cache_path(jira_project: str) -> pathlib.Path:
+    return pathlib.Path("cache", f"jira_{jira_project}.pickle")
+
+
+def _load_jira_issues(jira_project: str, memo: dict, refresh: bool) -> tuple[dict | None, str, bool]:
+    """Return (issues, cache status, fetched this run) without touching Jira.
+
+    issues is None when the project has to be fetched: it is not in this run's
+    memo, and its cache file is missing, expired, or bypassed by --refresh.
+    """
+    path = _jira_cache_path(jira_project)
+    if jira_project in memo:
+        entry = memo[jira_project]
+        return pickle.loads(entry["data"])["issues"], f"shared ({entry['tag']})", entry["fetched"]
+    if not refresh and _cache_is_fresh(path):
+        data = path.read_bytes()
+        memo[jira_project] = {"data": data, "tag": "cache", "fetched": False}
+        return pickle.loads(data)["issues"], _cache_status(path), False
+    return None, _cache_status(path, forced=refresh), True
+
+
+def _store_jira_issues(jira_project: str, jira_issues: dict, memo: dict, tag: str, fetched: bool) -> None:
+    """Write a project's issues to its cache file and to this run's memo."""
+    data = pickle.dumps({"issues": jira_issues})
+    path = _jira_cache_path(jira_project)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    memo[jira_project] = {"data": data, "tag": tag, "fetched": fetched}
+
+
+def _invalidate_jira_issues(jira_project: str, memo: dict) -> None:
+    """Forget a project's issues after Jira was written to, so the next tag re-fetches."""
+    _jira_cache_path(jira_project).unlink(missing_ok=True)
+    memo.pop(jira_project, None)
+
+
 def _exclude_projects(keys: list[str], excludes: list[str]) -> list[str]:
     """Drop Jira keys whose project prefix (before the hyphen) is in excludes.
 
@@ -887,26 +934,31 @@ def _fetch_external_bugs(
 
 def _fetch_remote_links_parallel(
     jira_issues: dict, bugz_data: dict, jira: JiraClient
-) -> None:
+) -> int:
     """Fetch and attach remote links for paired Jira issues (in-place).
 
     Only fetches for keys that appear in a bug's see_also AND exist in jira_issues,
-    avoiding unnecessary calls for unlinked issues. Fetched sequentially with a small
-    delay to avoid Jira rate limiting (350-token bucket).
+    avoiding unnecessary calls for unlinked issues, and skips any that already carry
+    remote links, since the per-project cache keeps links fetched for a sibling tag.
+    Fetched sequentially with a small delay to avoid Jira rate limiting (350-token
+    bucket). Returns how many were fetched, so the caller knows to re-save the cache.
     """
-    paired_keys = sorted(
+    paired_keys = sorted({
         key
         for bug_info in bugz_data.values()
         for key in bug_info["jira"]
-        if key in jira_issues
-    )
+        if key in jira_issues and "remote_links" not in jira_issues[key]
+    })
     total = len(paired_keys)
+    if not total:
+        return 0
     logger.info(f"Fetching remote links for {total} paired Jira issues...")
     for i, key in enumerate(paired_keys, 1):
         if i % 50 == 0:
             logger.info(f"  [{i}/{total}] fetching remote links...")
         jira_issues[key]["remote_links"] = jira.client.remote_links(key)
         time.sleep(0.15)
+    return total
 
 
 def fetch_data(
@@ -1160,6 +1212,9 @@ def main() -> None:
     captured = False              # True once any tag records a snapshot
     # Shared across tags so a renamed key is resolved (and missing keys recorded) only once.
     resolved_key_cache: dict = {}
+    # Jira project → this run's pickled issues, so a project shared by several tags
+    # is fetched once. See _load_jira_issues.
+    jira_memo: dict = {}
 
     for tag, jira_project, enabled in tag_configs:
         print(f"\n{Colors.BOLD}[{tag}]{Colors.RESET} → {Colors.CYAN}{jira_project}{Colors.RESET}")
@@ -1175,7 +1230,6 @@ def main() -> None:
 
         # ── Sync ────────────────────────────────────────────────────────────
         cache_bugz_path = pathlib.Path("cache", f"{tag}_bugzilla.pickle")
-        cache_jira_path = pathlib.Path("cache", f"{tag}_jira.pickle")
         cache_bugz_path.parent.mkdir(parents=True, exist_ok=True)
         need_remote_links = "remote_links" in enabled
 
@@ -1185,63 +1239,43 @@ def main() -> None:
         if not args.reverse and "components" in enabled:
             project_components = jira.client.project_components(jira_project)
 
-        # Determine freshness of each cache independently
+        # Bugzilla is cached per tag; Jira per project, shared across this run's tags.
         bugz_fresh = not args.refresh and _cache_is_fresh(cache_bugz_path)
-        jira_fresh = not args.refresh and _cache_is_fresh(cache_jira_path)
-        # Record a snapshot only when fresh data was fetched (cache busted), or when
-        # this tag has no history yet — avoids redundant identical rows and the extra
-        # Bugzilla count queries on warm-cache runs.
-        should_record = (not bugz_fresh) or (not jira_fresh) or not has_snapshot(tag)
-        jira_meta: dict | None = None
-
-        # Peek at the Jira cache to verify remote links were included if needed
-        if jira_fresh:
-            with cache_jira_path.open("rb") as f:
-                jira_meta = pickle.load(f)
-            if need_remote_links and not jira_meta.get("has_remote_links"):
-                logger.info(f"[{tag}] Jira cache lacks remote links — re-fetching")
-                jira_fresh = False
-
         bugz_cache_status = _cache_status(cache_bugz_path, forced=args.refresh)
-        jira_cache_status = _cache_status(cache_jira_path, forced=args.refresh)
+        jira_issues, jira_cache_status, jira_fetched = _load_jira_issues(
+            jira_project, jira_memo, args.refresh
+        )
+        # Record a snapshot only when fresh data was fetched this run, for this tag or
+        # (on the Jira side) a sibling tag sharing the project, or when this tag has no
+        # history yet — avoids redundant identical rows and the extra Bugzilla count
+        # queries on warm-cache runs.
+        should_record = (not bugz_fresh) or jira_fetched or not has_snapshot(tag)
 
-        if bugz_fresh and jira_fresh:
-            with cache_bugz_path.open("rb") as f:
-                bugz_data = pickle.load(f)
-            jira_issues = jira_meta["issues"]
-
-        elif not bugz_fresh and not jira_fresh:
+        if not bugz_fresh and jira_issues is None:
             # Both stale — fetch in parallel
             with ThreadPoolExecutor(max_workers=2) as pool:
                 bz_future = pool.submit(_fetch_bugzilla, tag, bugz)
                 jira_future = pool.submit(_fetch_jira, jira_project, jira)
                 bugzilla_results = bz_future.result()
                 jira_issues = jira_future.result()
-            bugz_data = _bugzilla_results_to_dict(bugzilla_results, jira_project, excludes)
-            if need_remote_links:
-                _fetch_remote_links_parallel(jira_issues, bugz_data, jira)
-            with cache_bugz_path.open("wb") as f:
-                pickle.dump(bugz_data, f)
-            with cache_jira_path.open("wb") as f:
-                pickle.dump({"issues": jira_issues, "has_remote_links": need_remote_links}, f)
-
         elif not bugz_fresh:
-            # Only Bugzilla stale
             bugzilla_results = _fetch_bugzilla(tag, bugz)
-            bugz_data = _bugzilla_results_to_dict(bugzilla_results, jira_project, excludes)
-            with cache_bugz_path.open("wb") as f:
-                pickle.dump(bugz_data, f)
-            jira_issues = jira_meta["issues"]
+        elif jira_issues is None:
+            jira_issues = _fetch_jira(jira_project, jira)
 
-        else:
-            # Only Jira stale
+        if bugz_fresh:
             with cache_bugz_path.open("rb") as f:
                 bugz_data = pickle.load(f)
-            jira_issues = _fetch_jira(jira_project, jira)
-            if need_remote_links:
-                _fetch_remote_links_parallel(jira_issues, bugz_data, jira)
-            with cache_jira_path.open("wb") as f:
-                pickle.dump({"issues": jira_issues, "has_remote_links": need_remote_links}, f)
+        else:
+            bugz_data = _bugzilla_results_to_dict(bugzilla_results, jira_project, excludes)
+            with cache_bugz_path.open("wb") as f:
+                pickle.dump(bugz_data, f)
+
+        jira_needs_store = jira_project not in jira_memo   # fetched just now, by this tag
+        if need_remote_links and _fetch_remote_links_parallel(jira_issues, bugz_data, jira):
+            jira_needs_store = True
+        if jira_needs_store:
+            _store_jira_issues(jira_project, jira_issues, jira_memo, tag, fetched=jira_fetched)
 
         dropped_jira_keys: list = []
         bugzilla_bugs = _merge_bug_data(bugz_data, jira_issues, dropped=dropped_jira_keys)
@@ -1330,8 +1364,8 @@ def main() -> None:
                 cache_bugz_path.unlink(missing_ok=True)
                 logger.info(f"[{tag}] Bugzilla cache cleared (data changed)")
             if jira.applied:
-                cache_jira_path.unlink(missing_ok=True)
-                logger.info(f"[{tag}] Jira cache cleared (data changed)")
+                _invalidate_jira_issues(jira_project, jira_memo)
+                logger.info(f"[{tag}] Jira cache cleared for {jira_project} (data changed)")
             bugz.updates = []
             jira.updates = []
             bugz.applied = False
