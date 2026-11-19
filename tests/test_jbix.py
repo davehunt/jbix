@@ -284,6 +284,33 @@ class TestCacheStatus:
 
 
 # ---------------------------------------------------------------------------
+# check_bugzilla_access
+# ---------------------------------------------------------------------------
+
+
+class TestCheckBugzillaAccess:
+    def test_key_allows_any_mode(self, capsys):
+        for mode in ("check", "preview", "prompt", "apply"):
+            jbix_main.check_bugzilla_access(mode, api_key="secret")
+        assert capsys.readouterr().out == ""
+
+    def test_check_mode_runs_anonymously_and_says_so(self, capsys):
+        jbix_main.check_bugzilla_access("check", api_key="")
+        assert "anonymous, public bugs only" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("mode", ["preview", "prompt", "apply"])
+    def test_other_modes_refuse_to_run_anonymously(self, mode):
+        with pytest.raises(SystemExit) as e:
+            jbix_main.check_bugzilla_access(mode, api_key="")
+        assert e.value.code == 1
+
+    def test_defaults_to_the_environment_key(self, monkeypatch):
+        monkeypatch.setattr(jbix_main, "BUGZILLA_API_KEY", None)
+        with pytest.raises(SystemExit):
+            jbix_main.check_bugzilla_access("apply")
+
+
+# ---------------------------------------------------------------------------
 # Per-project Jira cache and in-run memo
 # ---------------------------------------------------------------------------
 
