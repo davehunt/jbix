@@ -138,10 +138,10 @@ deng: [dataplatform, dataquality, fog-migration, glean-sdk-jira]
 
 Bugzilla and Jira data are cached separately and expire after 1 hour:
 
-- `cache/<tag>_bugzilla.pickle` — raw Bugzilla bug data
-- `cache/<tag>_jira.pickle` — Jira issue data (includes a `has_remote_links` flag)
+- `cache/<tag>_bugzilla.pickle` — raw Bugzilla bug data, per whiteboard tag
+- `cache/jira_<PROJECT>.pickle` — Jira issue data, per Jira project
 
-On each run, only the stale side is re-fetched. The cache is only invalidated after a run if changes were actually applied to that side — in `prompt` mode, declining all changes leaves the cache intact.
+On each run, only the stale side is re-fetched. Several tags can map to one Jira project, so a project is fetched at most once per run and shared by every tag that uses it, shown as `shared (<tag>)` in the fetch summary. The cache is only invalidated after a run if changes were actually applied to that side — in `prompt` mode, declining all changes leaves the cache intact.
 
 Use `--refresh` to bypass the cache and force a full re-fetch. The cache status line will show `forced (Xm old)` or `forced (no cache)` when `--refresh` is active.
 
