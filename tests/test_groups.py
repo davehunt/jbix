@@ -71,3 +71,15 @@ def test_resolve_tags_union_no_dupes():
 
 def test_resolve_tags_only_tags():
     assert resolve_tags(["fp", "fxp"], []) == ["fp", "fxp"]
+
+
+def test_resolve_tags_excludes_from_tags_and_groups():
+    assert resolve_tags(["fp", "sp3"], ["performance"], ["sp3", "fxpe"]) == ["fp", "fxp", "pcf"]
+
+
+def test_resolve_tags_exclude_everything_leaves_nothing():
+    assert resolve_tags(["fp"], [], ["fp"]) == []
+
+
+def test_resolve_tags_unselected_exclude_is_ignored():
+    assert resolve_tags(["fp"], [], ["bogus"]) == ["fp"]

@@ -193,6 +193,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Process every whiteboard tag in the JBI config",
     )
     parser.add_argument(
+        "--exclude-tags", nargs="+", metavar="TAG",
+        help="Whiteboard tag(s) to leave out of those selected by --tags, --group "
+             "and --all-tags (e.g. --all-tags --exclude-tags bz-ffx-core)",
+    )
+    parser.add_argument(
         "--mode", choices=["preview", "prompt", "apply", "check"], default="check",
         help="check=health+diff (default), preview=dry-run, prompt=confirm each, apply=make changes",
     )
@@ -1176,9 +1181,17 @@ def main() -> None:
     explicit_tags = list(args.tags or [])
     if args.all_tags:
         explicit_tags += all_tags()
-    run_tags = resolve_tags(explicit_tags, args.group or [])
+    exclude_tags = args.exclude_tags or []
+    run_tags = resolve_tags(explicit_tags, args.group or [], exclude_tags)
+    # An excluded tag that was never selected is most likely a typo or a renamed tag,
+    # which would otherwise leave the tag it meant to drop silently included.
+    if unmatched := [t for t in exclude_tags if t not in resolve_tags(explicit_tags, args.group or [])]:
+        logger.warning(f"--exclude-tags: not among the selected tags, ignored: {', '.join(unmatched)}")
     if not run_tags:
-        logger.error("No tags to process — pass --tags, --group, and/or --all-tags.")
+        if exclude_tags and resolve_tags(explicit_tags, args.group or []):
+            logger.error("No tags to process — --exclude-tags removed every selected tag.")
+        else:
+            logger.error("No tags to process — pass --tags, --group, and/or --all-tags.")
         sys.exit(1)
 
     # Resolve each tag to its Jira project + effective flags
