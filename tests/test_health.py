@@ -98,10 +98,7 @@ class TestRunHealthCheck:
 class TestCheckBugzilla:
     def test_prints_totals(self, capsys):
         bugz = make_bugz()
-
-        all_bugs = [MagicMock() for _ in range(100)]
-        tagged_bugs = [MagicMock() for _ in range(60)]
-        bugz.client.query.side_effect = [all_bugs, tagged_bugs]
+        bugz.client._backend.bug_search.side_effect = [{"bug_count": 100}, {"bug_count": 60}]
 
         with patch("jbix.health.build_component_query") as mock_q:
             mock_q.side_effect = lambda *a, **kw: {"_next_field_num": 10}
@@ -113,7 +110,7 @@ class TestCheckBugzilla:
 
     def test_handles_zero_total_gracefully(self, capsys):
         bugz = make_bugz()
-        bugz.client.query.return_value = []
+        bugz.client._backend.bug_search.return_value = {"bug_count": 0}
 
         with patch("jbix.health.build_component_query") as mock_q:
             mock_q.side_effect = lambda *a, **kw: {"_next_field_num": 10}
@@ -122,19 +119,23 @@ class TestCheckBugzilla:
         captured = capsys.readouterr()
         assert "0" in captured.out
 
-    def test_paginates_past_batch_size(self, capsys):
+    def test_counts_past_batch_size_in_one_request_each(self, capsys):
         bugz = make_bugz()
-        batch1 = [MagicMock() for _ in range(1000)]
-        batch2 = [MagicMock() for _ in range(1000)]
-        batch3 = [MagicMock() for _ in range(500)]
-        bugz.client.query.side_effect = [batch1, batch2, batch3, []]
+        bugz.client._backend.bug_search.side_effect = [{"bug_count": 25000}, {"bug_count": 2500}]
 
         with patch("jbix.health.build_component_query") as mock_q:
-            mock_q.side_effect = lambda *a, **kw: {"_next_field_num": 10}
+            mock_q.side_effect = lambda *a, **kw: {"_next_field_num": 10, "include_fields": ["id"]}
             _check_bugzilla("fxp", COMPONENTS, bugz)
 
         captured = capsys.readouterr()
+        assert "25,000" in captured.out
         assert "2,500" in captured.out
+        assert bugz.client._backend.bug_search.call_count == 2  # total + tagged, no paging
+        bugz.client.query.assert_not_called()
+        for call in bugz.client._backend.bug_search.call_args_list:
+            params = call.args[0]
+            assert params["count_only"] == 1
+            assert not {"include_fields", "limit", "offset"} & params.keys()
 
 
 # ---------------------------------------------------------------------------

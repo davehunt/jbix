@@ -14,9 +14,9 @@ from collections import defaultdict
 
 from jbix.bugzilla import (
     BUGZILLA_URL,
-    BZ_FETCH_BATCH_SIZE,
     BugzillaClient,
     build_component_query,
+    retry_on_transient,
 )
 from jbix.constants import JIRA_SEVERITY_FIELD, Colors
 from jbix.fuzzy import (
@@ -111,16 +111,18 @@ def compute_health_metrics(
 
 
 def _bz_count(bugz: BugzillaClient, query: dict) -> int:
-    """Return the total number of bugs matching query, paginating past the 10k limit."""
-    total = 0
-    offset = 0
-    while True:
-        batch = bugz.client.query({**query, "limit": BZ_FETCH_BATCH_SIZE, "offset": offset})
-        total += len(batch)
-        if len(batch) < BZ_FETCH_BATCH_SIZE:
-            break
-        offset += BZ_FETCH_BATCH_SIZE
-    return total
+    """Return the number of bugs matching query, in a single count_only request.
+
+    python-bugzilla's query() expects a "bugs" key, which a count_only response
+    lacks, so this goes to the REST backend directly. Paging fields are dropped:
+    Bugzilla ignores them for a count, and include_fields has nothing to shape.
+    """
+    params = {k: v for k, v in query.items() if k not in ("include_fields", "limit", "offset")}
+    result = retry_on_transient(
+        lambda: bugz.client._backend.bug_search({**params, "count_only": 1}),
+        description="Bugzilla bug count",
+    )
+    return int(result["bug_count"])
 
 
 def _bugzilla_metrics(
