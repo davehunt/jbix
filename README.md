@@ -21,6 +21,9 @@ python jbix.py --tags fxp fxpe --mode preview
 # Every whiteboard tag in the JBI config
 python jbix.py --all-tags --mode check
 
+# Every tag except some (also works with --tags and --group)
+python jbix.py --all-tags --exclude-tags bz-ffx-core bz-ffx-firefox --mode check
+
 # A named tag group (see groups.yaml) — regenerates output/report.html
 python jbix.py --group perf --mode check
 

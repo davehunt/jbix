@@ -11,6 +11,7 @@ Stdlib + pyyaml only: this module must not import credential-reading jbi modules
 
 import pathlib
 import sys
+from collections.abc import Sequence
 
 import yaml
 
@@ -60,10 +61,11 @@ def expand_groups(names: list[str]) -> list[str]:
     return tags
 
 
-def resolve_tags(tags: list[str], group_names: list[str]) -> list[str]:
-    """Order-preserving, de-duplicated union of explicit tags + expanded groups."""
+def resolve_tags(tags: list[str], group_names: list[str], exclude: Sequence[str] = ()) -> list[str]:
+    """Order-preserving, de-duplicated union of explicit tags + expanded groups,
+    less any tag in exclude."""
     out: list[str] = []
     for tag in list(tags) + expand_groups(group_names):
-        if tag not in out:
+        if tag not in out and tag not in exclude:
             out.append(tag)
     return out
