@@ -15,5 +15,6 @@ __pycache__/
 # Generated data & reports (internal — not for publication)
 cache/
 snapshots/
+latest/
 output/
 report*.html

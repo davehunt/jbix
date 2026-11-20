@@ -1,64 +1,91 @@
 """Per-tag drift snapshot store + cross-tag aggregation.
 
-Each forward ``jbix.py`` run appends one compact JSON line per tag to
-``snapshots/<tag>.jsonl``. A report (``make_report.py``) later assembles the
-latest snapshot of every tag — even tags captured in earlier runs — and
-recomputes cross-tag Totals via :func:`aggregate_metrics`.
+Each forward ``jbix.py`` run records two things per tag, both in the data
+directory (see ``jbix.paths``):
 
-Stdlib-only by design: this module is imported by ``jbix.py`` *and* by the
-standalone ``make_report.py`` (which must run without ``.env``). It must not
-pull in ``jbix.bugzilla``/``jbix.jira``/``jbix.people``, which read credentials at
+- **History**: one compact JSON line appended to ``snapshots/<tag>.jsonl``,
+  counts only, so a year of daily runs across every tag stays small enough to
+  keep in git. The drift site charts it.
+- **Latest**: ``latest/<tag>.json``, overwritten each run, holding the per-bug
+  drift rows, broken links and live query URLs for that run. These are only ever
+  wanted for the most recent run, and are most of a run's bytes. The rows are
+  capped for the page; ``latest/<tag>.csv`` has every one, for download.
+
+:func:`aggregate_metrics` sums per-tag metrics into cross-tag totals.
+
+Stdlib-only by design: this module is imported by ``jbix.py`` *and* by the site
+builder (``jbix.site``), which must run without ``.env``. It must not pull in
+``jbix.bugzilla``/``jbix.jira``/``jbix.people``, which read credentials at
 import time (see the ``load_dotenv()`` ordering note in CLAUDE.md).
 """
 
+import csv
 import json
+import os
 import pathlib
 from datetime import datetime
 
-SNAPSHOT_DIR = pathlib.Path("snapshots")
+from jbix import paths
 
-# Keys copied from each metric dict. The numeric counts drive the report's
-# stats/pies; the *_url keys (deterministic Bugzilla/Jira queries) are kept so a
-# report assembled later from the latest snapshot can link to live queries.
-_BUGZILLA_KEYS = ("total", "tagged", "untagged", "pct_tagged", "pct_untagged",
-                  "bugs_url", "untagged_url")
-_JIRA_KEYS = ("total", "linked", "unlinked", "pct_linked", "pct_unlinked",
-              "project_url", "issues_url", "unlinked_url")
+# None means the data directory's snapshots/ and latest/; tests set paths directly.
+SNAPSHOT_DIR: pathlib.Path | None = None
+LATEST_DIR: pathlib.Path | None = None
 
-# Cap broken-link rows stored per snapshot line (full set is in the CSV).
-_BROKEN_LINKS_CAP = 50
+# Counts kept in each history line, and the extra keys kept in the latest file:
+# the *_url keys are deterministic Bugzilla/Jira queries the site links to.
+_BUGZILLA_COUNTS = ("total", "tagged", "untagged")
+_JIRA_COUNTS = ("total", "linked", "unlinked")
+_BUGZILLA_URLS = ("bugs_url", "untagged_url")
+_JIRA_URLS = ("project_url", "issues_url", "unlinked_url")
 
-# Cap per-field drift rows stored per snapshot line (full set is in output/updates.csv).
-# These power the per-tag detail report's "Drifted fields" table.
-_DRIFT_ROWS_CAP = 50
+# Per-bug rows kept in the latest file. One file per tag, overwritten, so the
+# caps are generous; the full sets are in output/updates.csv and the CSVs.
+_BROKEN_LINKS_CAP = 500
+_DRIFT_ROWS_CAP = 500
 _DRIFT_ROW_KEYS = ("bug_url", "jira_url", "field", "before", "after")
+
+
+def _snapshot_dir() -> pathlib.Path:
+    return SNAPSHOT_DIR or paths.snapshots_dir()
+
+
+def _latest_dir() -> pathlib.Path:
+    return LATEST_DIR or paths.latest_dir()
 
 
 def _trim(d: dict | None, keys: tuple[str, ...]) -> dict | None:
     return {k: d[k] for k in keys if k in d} if d else None
 
 
-def _trim_diff(diff: dict | None) -> dict | None:
+def _history_diff(diff: dict | None) -> dict | None:
     if not diff:
         return None
     return {
         "total_pairs": diff["total_pairs"],
         "drifted_pairs": diff["drifted_pairs"],
-        "drift_pct": diff["drift_pct"],
-        "fields": [
-            {"field": f.get("field", f["name"]), "name": f["name"],
-             "n": f["n"], "pct": f["pct"]}
-            for f in diff["fields"]
-        ],
-        "rows": [
-            {k: r[k] for k in _DRIFT_ROW_KEYS if k in r}
-            for r in (diff.get("rows") or [])[:_DRIFT_ROWS_CAP]
-        ],
+        "fields": {f["name"]: f["n"] for f in diff["fields"]},
+    }
+
+
+def _latest_diff(diff: dict | None) -> dict | None:
+    if not diff:
+        return None
+    rows = diff.get("rows") or []
+    return {
+        "total_pairs": diff["total_pairs"],
+        "drifted_pairs": diff["drifted_pairs"],
+        "fields": [{"name": f["name"], "n": f["n"]} for f in diff["fields"]],
+        "rows": [{k: r[k] for k in _DRIFT_ROW_KEYS if k in r} for r in rows[:_DRIFT_ROWS_CAP]],
+        "rows_total": len(rows),
     }
 
 
 def _path(tag: str) -> pathlib.Path:
-    return SNAPSHOT_DIR / f"{tag}.jsonl"
+    return _snapshot_dir() / f"{tag}.jsonl"
+
+
+def latest_path(tag: str) -> pathlib.Path:
+    return _latest_dir() / f"{tag}.json"
 
 
 def has_snapshot(tag: str) -> bool:
@@ -75,27 +102,103 @@ def record_snapshot(
     ts: datetime,
     broken_links: list | None = None,
 ) -> pathlib.Path:
-    """Append one snapshot line for ``tag`` to ``snapshots/<tag>.jsonl``.
+    """Append ``tag``'s history line and rewrite its latest file; return the history path.
 
     ``health_metrics`` / ``diff_metrics`` are the dicts returned by
     ``run_health_check`` / ``run_diff_check`` (or the silent ``compute_*``
-    variants) in ``jbix.health``. ``broken_links`` is the list of stale
-    Bugzilla→Jira see-also references from ``find_broken_links`` (capped to keep
-    the line small; the full set is in ``output/broken_links_<tag>.csv``).
+    variants) in ``jbix.health``. ``broken_links`` is the list from
+    ``find_broken_links``: counted in the history, listed in the latest file.
     """
-    entry = {
-        "ts": ts.isoformat(timespec="seconds"),
+    stamp = ts.isoformat(timespec="seconds")
+    bz, jr = health_metrics.get("bugzilla"), health_metrics.get("jira")
+    broken = broken_links or []
+    history = {
+        "ts": stamp,
         "jira_project": jira_project,
-        "bugzilla": _trim(health_metrics.get("bugzilla"), _BUGZILLA_KEYS),
-        "jira": _trim(health_metrics.get("jira"), _JIRA_KEYS),
-        "diff": _trim_diff(diff_metrics),
-        "broken_links": (broken_links or [])[:_BROKEN_LINKS_CAP],
+        "bugzilla": _trim(bz, _BUGZILLA_COUNTS),
+        "jira": _trim(jr, _JIRA_COUNTS),
+        "diff": _history_diff(diff_metrics),
+        "broken_links": len(broken),
     }
-    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    latest = {
+        "ts": stamp,
+        "jira_project": jira_project,
+        "bugzilla": _trim(bz, _BUGZILLA_COUNTS + _BUGZILLA_URLS),
+        "jira": _trim(jr, _JIRA_COUNTS + _JIRA_URLS),
+        "diff": _latest_diff(diff_metrics),
+        "broken_links": broken[:_BROKEN_LINKS_CAP],
+        "broken_links_total": len(broken),
+    }
     path = _path(tag)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as fh:
-        fh.write(json.dumps(entry) + "\n")
+        fh.write(json.dumps(history, separators=(",", ":")) + "\n")
+    _write_json(latest_path(tag), latest)
+    _write_changes_csv(latest_csv_path(tag), (diff_metrics or {}).get("rows") or [])
     return path
+
+
+# -- what a drift row would change -------------------------------------------
+
+def diff_values(field: str, before, after) -> tuple[list, list] | None:
+    """What syncing from Bugzilla would add to and remove from a Jira field.
+
+    Bugzilla is the authority. A list value (labels, components) gives what would
+    be added and removed; a links row is one link to create or remove. A plain
+    value gives None: it is simply replaced.
+    """
+    if isinstance(before, list) or isinstance(after, list):
+        old = before if isinstance(before, list) else []
+        new = after if isinstance(after, list) else []
+        return [v for v in new if v not in old], [v for v in old if v not in new]
+    if field == "links":
+        return ([after] if after else []), ([before] if before else [])
+    return None
+
+
+def change_text(field: str, before, after) -> str:
+    """A drift row's change as plain text: ``+ todo; − stale`` or ``P3 → P1``."""
+    parts = diff_values(field, before, after)
+    if parts is None:
+        return f"{before or 'none'} → {after or 'none'}"
+    added, removed = parts
+    return "; ".join([f"+ {v}" for v in added] + [f"− {v}" for v in removed]) or "reordered only"
+
+
+_CSV_COLUMNS = ("bug", "jira_issue", "field", "change", "jira_value", "bugzilla_value")
+
+
+def latest_csv_path(tag: str) -> pathlib.Path:
+    return _latest_dir() / f"{tag}.csv"
+
+
+def _write_changes_csv(path: pathlib.Path, rows: list[dict]) -> None:
+    """Every drift row, uncapped, or no file at all when nothing has drifted."""
+    if not rows:
+        path.unlink(missing_ok=True)
+        return
+
+    def text(v) -> str:
+        return "; ".join(v) if isinstance(v, list) else str(v or "")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".csv.tmp")
+    with tmp.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(_CSV_COLUMNS)
+        for r in rows:
+            field, before, after = r.get("field", ""), r.get("before", ""), r.get("after", "")
+            writer.writerow([r.get("bug_url", ""), r.get("jira_url", ""), field,
+                             change_text(field, before, after), text(before), text(after)])
+    os.replace(tmp, path)
+
+
+def _write_json(path: pathlib.Path, obj: dict) -> None:
+    """Write via a temporary file and rename, so a reader never sees half a file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=1) + "\n")
+    os.replace(tmp, path)
 
 
 def aggregate_metrics(per_tag: list[dict]) -> dict:

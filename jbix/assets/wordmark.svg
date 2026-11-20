@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-6 -6 451 113" role="img" aria-labelledby="title">
+  <title id="title">JBIX</title>
+  <defs>
+    <clipPath id="green-underpass">
+      <path d="M-20-20H140.17L-20 107.41ZM216-39.22V120H15.84Z"/>
+    </clipPath>
+  </defs>
+  <style>
+    .letters { fill: #090D19; }
+    @media (prefers-color-scheme: dark) {
+      .letters { fill: #F4F6FA; }
+    }
+  </style>
+  <g class="letters">
+    <path d="M53 0H82V64C82 88 66 101 41 101S0 87 0 64V62H29V64
+             C29 72 33 77 41 77S53 72 53 64Z"/>
+    <path fill-rule="evenodd" d="M94 0H145C171 0 186 10 186 26
+             C186 37 180 44 168 47C182 51 190 59 190 72
+             C190 90 174 100 145 100H94Z
+             M123 21V39H141C150 39 155 36 155 30S150 21 141 21Z
+             M123 58V79H145C154 79 160 75 160 69S154 58 145 58Z"/>
+    <path d="M202 0H231V100H202Z"/>
+  </g>
+  <g transform="translate(243)">
+    <path d="M0 10H20Q28 10 34 15L122 85Q128 90 136 90H174"
+          fill="none" stroke="#08783F" stroke-width="20" clip-path="url(#green-underpass)"/>
+    <path d="M173 80L196 90L173 100Z" fill="#08783F"/>
+    <path d="M0 90H20Q28 90 34 85L122 15Q128 10 136 10H174"
+          fill="none" stroke="#165DF5" stroke-width="20"/>
+    <path d="M173 0L196 10L173 20Z" fill="#165DF5"/>
+  </g>
+</svg>
