@@ -89,6 +89,11 @@ JIRA_URL=https://mozilla-hub.atlassian.net
 JIRA_API_USER=user@mozilla.com
 JIRA_API_KEY=...
 
+# Optional: where API calls go, if not JIRA_URL. An Atlassian service account's
+# token only works through the API gateway; JIRA_URL stays the site's address,
+# which links in Bugzilla and in the report use.
+JIRA_API_URL=https://api.atlassian.com/ex/jira/<cloud id>
+
 # Optional: pre-migration Jira host. see_also links using this host are treated
 # as aliases of JIRA_URL (issue keys were preserved). Set empty to disable.
 JIRA_LEGACY_URL=https://jira.mozilla.com

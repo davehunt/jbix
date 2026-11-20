@@ -526,3 +526,28 @@ class TestJiraClientIssueLinkDescriptions:
         j.client.create_issue_link.assert_called_once_with(
             "Blocks", inwardIssue=jira["key"], outwardIssue="FXP-200"
         )
+
+
+class TestApiUrl:
+    """API calls can go somewhere other than the site, as a service account's must."""
+
+    def test_client_uses_the_api_url(self, monkeypatch):
+        import jbix.jira as jira_mod
+        monkeypatch.setattr(jira_mod, "JIRA_API_URL", "https://api.atlassian.com/ex/jira/cloud-id")
+        with patch.object(jira_mod, "JIRA") as client:
+            jira_mod.JiraClient(mode="preview")
+        assert client.call_args.args[0] == "https://api.atlassian.com/ex/jira/cloud-id"
+
+    def test_api_url_defaults_to_the_site(self, monkeypatch):
+        import importlib
+
+        import jbix.jira as jira_mod
+        monkeypatch.delenv("JIRA_API_URL", raising=False)
+        monkeypatch.setenv("JIRA_URL", "https://example.atlassian.net")
+        try:
+            importlib.reload(jira_mod)
+            assert jira_mod.JIRA_API_URL == "https://example.atlassian.net"
+            assert jira_mod.JIRA_URL == "https://example.atlassian.net"
+        finally:
+            monkeypatch.undo()
+            importlib.reload(jira_mod)
