@@ -394,6 +394,34 @@ class TestRunDiffCheck:
                            "field": "summary", "before": "old", "after": "new"}
         assert rows[1]["field"] == "severity"  # customfield mapped to display name
 
+    def test_fields_sharing_a_display_name_are_tallied_together(self):
+        # A status transition that sets a resolution is a status change, and the two
+        # Jira severity fields are one field to a reader.
+        from jbix.constants import JIRA_SEVERITY_FIELD
+        m = _diff_metrics(
+            [_make_update(1, "FXP-1", "status"),
+             _make_update(2, "FXP-2", "status (resolution)"),
+             _make_update(3, "FXP-3", JIRA_SEVERITY_FIELD),
+             _make_update(3, "FXP-3", "severity")],
+            _make_bugs(3), {"status", "severity"},
+        )
+        n = {f["name"]: f["n"] for f in m["fields"]}
+        assert n["status"] == 2 and n["severity"] == 1
+        assert [f["name"] for f in m["fields"]].count("status") == 1
+        assert {r["field"] for r in m["rows"]} == {"status", "severity"}
+
+    def test_issue_links_are_called_links(self):
+        m = _diff_metrics([_make_update(1, "FXP-1", "issue_links")], _make_bugs(1), {"dependencies"})
+        assert m["rows"][0]["field"] == "links"
+        assert "links" in {f["name"] for f in m["fields"]}
+
+    def test_list_values_stay_lists_for_diffing(self):
+        u = _make_update(1, "FXP-1", "labels")
+        u["jira_before"], u["jira_after"] = ["fxp", "bugzilla"], ["bugzilla", "fxp", "todo"]
+        row = _diff_metrics([u], _make_bugs(1), {"whiteboard_labels"})["rows"][0]
+        assert row["before"] == ["bugzilla", "fxp"]
+        assert row["after"] == ["bugzilla", "fxp", "todo"]
+
     def test_restricted_bug_rows_are_withheld_but_still_counted(self):
         # before/after can carry a restricted bug's summary, so its rows stay out
         bugs = _make_bugs(3)

@@ -363,8 +363,10 @@ _FIELD_DISPLAY: dict[str, str] = {
     "status": "status",
     "resolution": "resolution",
     "severity": "severity",
-    "issue_links": "issue_links",
-    "remote_links": "remote_links",
+    "issue_links": "links",
+    "remote_links": "remote links",
+    # A transition that sets a resolution too, e.g. "Backlog (none)" → "Done (Won't Do)"
+    "status (resolution)": "status",
     "issuetype": "type",
     "timeoriginalestimate": "time_tracking",
     "duedate": "deadline",
@@ -389,6 +391,16 @@ _FLAG_TO_JIRA_FIELDS: dict[str, list[str]] = {
     "see_also": ["issue_links"],
     "remote_links": ["remote_links"],
 }
+
+
+def _row_value(value) -> str | list[str]:
+    """A drift row's before/after value as JSON: a list stays a list, so a reader can
+    show what would be added and removed; anything else becomes its text."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return sorted(str(v) for v in value)
+    return str(value)
 
 
 def _diff_metrics(updates: list[dict], bugzilla_bugs: dict, enabled: set[str]) -> dict | None:
@@ -416,24 +428,27 @@ def _diff_metrics(updates: list[dict], bugzilla_bugs: dict, enabled: set[str]) -
     if not jira_fields_to_show:
         return None
 
-    # Order: follow _FIELD_DISPLAY order, then any remainder alphabetically
-    ordered = [f for f in _FIELD_DISPLAY if f in jira_fields_to_show]
-    ordered += sorted(jira_fields_to_show - set(_FIELD_DISPLAY))
+    # Tally by display name, not by Jira field: several Jira fields share one name
+    # (both severity fields; "status (resolution)" is a status change), and a pair
+    # counts once per name however many of its fields differ.
+    def display(jira_field: str) -> str:
+        return _FIELD_DISPLAY.get(jira_field, jira_field)
 
-    # Tally distinct (bug_url, jira_url) pairs that differed, per jira_field
+    # Order: follow _FIELD_DISPLAY order, then any remainder alphabetically
+    ordered: list[str] = []
+    for f in [f for f in _FIELD_DISPLAY if f in jira_fields_to_show] + sorted(
+            jira_fields_to_show - set(_FIELD_DISPLAY)):
+        if display(f) not in ordered:
+            ordered.append(display(f))
+
     seen: dict[str, set] = defaultdict(set)
     for u in updates:
-        seen[u["jira_field"]].add((u["bug_url"], u["jira_url"]))
+        seen[display(u["jira_field"])].add((u["bug_url"], u["jira_url"]))
 
     fields = []
-    for field in ordered:
-        n = len(seen.get(field, set()))
-        fields.append({
-            "field": field,
-            "name": _FIELD_DISPLAY.get(field, field),
-            "n": n,
-            "pct": n / total_pairs,
-        })
+    for name in ordered:
+        n = len(seen.get(name, set()))
+        fields.append({"field": name, "name": name, "n": n, "pct": n / total_pairs})
 
     drifted_pairs = len({pair for pairs in seen.values() for pair in pairs})
 
@@ -445,9 +460,9 @@ def _diff_metrics(updates: list[dict], bugzilla_bugs: dict, enabled: set[str]) -
         {
             "bug_url": u["bug_url"],
             "jira_url": u["jira_url"],
-            "field": _FIELD_DISPLAY.get(u["jira_field"], u["jira_field"]),
-            "before": "" if u["jira_before"] is None else str(u["jira_before"]),
-            "after": "" if u["jira_after"] is None else str(u["jira_after"]),
+            "field": display(u["jira_field"]),
+            "before": _row_value(u["jira_before"]),
+            "after": _row_value(u["jira_after"]),
         }
         for u in updates
         if u["bug_url"] not in restricted
