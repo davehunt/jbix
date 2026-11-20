@@ -1,3 +1,5 @@
+<img src="jbix/assets/wordmark.svg" alt="jbix" width="240">
+
 # jbix
 
 Bidirectional synchronisation tool that keeps Mozilla's Bugzilla and Jira instances consistent for specific projects, with drift health reporting. It extends [JBI](https://github.com/mozilla/jira-bugzilla-integration) with reverse sync, consistency checks, and an HTML drift report.
@@ -24,7 +26,7 @@ python jbix.py --all-tags --mode check
 # Every tag except some (also works with --tags and --group)
 python jbix.py --all-tags --exclude-tags bz-ffx-core bz-ffx-firefox --mode check
 
-# A named tag group (see groups.yaml) — regenerates output/report.html
+# A named tag group (see groups.yaml)
 python jbix.py --group perf --mode check
 
 # Apply changes
@@ -137,7 +139,7 @@ genai:
 deng: [dataplatform, dataquality, fog-migration, glean-sdk-jira]
 ```
 
-`--group perf` expands to that group's tags. Multiple groups (`--group perf genai`) and combining with `--tags` are supported (de-duplicated union). After a capturing run `output/report.html` is regenerated in full — every group in `groups.yaml` gets its own summary view regardless of which tags were processed.
+`--group perf` expands to that group's tags. Multiple groups (`--group perf genai`) and combining with `--tags` are supported (de-duplicated union). After a capturing run the drift site is rebuilt in full, so every group in `groups.yaml` gets its page regardless of which tags were processed.
 
 ## Caching
 
@@ -166,30 +168,30 @@ All sync operations append to `output/updates.csv` for audit trail purposes.
 
 Fuzzy link candidate matching (`--link-candidates`) writes `output/link_candidates_<tag>.csv`; tune the match cutoff with `--threshold PCT` (default 85).
 
-## Drift report
+## Drift site
 
-Every forward run records a compact per-tag snapshot to `snapshots/<tag>.jsonl` and (unless `--no-report`) regenerates `output/report.html` — **one standalone file** covering the latest snapshot of every tag, holding all of these views:
+Every forward run records two things per tag in the data directory, then (unless `--no-site`) rebuilds the drift site in `output/site/`:
 
-- the full report over all tags, with a per-group breakdown
-- one summary per group in `groups.yaml`
-- one drilldown per tag: every drifted field (bug/Jira links + current → should-be values, for hand repairs) and the full broken-links table
+- `snapshots/<tag>.jsonl` — the history: one compact line of counts per run, a few hundred bytes, so a year of daily runs stays small enough to keep in git
+- `latest/<tag>.json` — the latest run's detail, overwritten each run: the drifted fields with their current and expected values, the broken links, and links to live Bugzilla and Jira queries
+- `latest/<tag>.csv` — every change the latest run found, uncapped: the tag page lists the first 500 and links to this as `tags/<tag>-changes.csv`, with a column saying what syncing from Bugzilla would change (`+ todo`, `P3 → P1`)
 
-Views are switched in-page by a hash router, so the file can be shared or opened from disk as-is (Chart.js is the only external asset, loaded from CDN):
+The site is plain static HTML with relative links, so it works from disk or any web server:
 
-| Route | View |
+| Page | Shows |
 |---|---|
-| `#/` | full report |
-| `#/group/perf` | group summary |
-| `#/tag/fxpe` | tag drilldown |
-| `#/tag/fxpe/drift`, `#/tag/fxpe/broken` | straight to a tag's drift / broken-link table |
+| `index.html` | totals, drift over time, every group, and every tag ranked by drift |
+| `groups/<group>.html` | the same for one group in `groups.yaml` |
+| `tags/<tag>.html` | one tag: its trend, which fields drift, each bug and issue out of sync, its broken links |
 
-Summary cards show coverage and drift over time; the "fields out of sync" and "broken links" numbers deep-link into the tag's detail sections. Rebuild on demand with:
+Charts are inline SVG, and it has a light and a dark theme, following the system unless the reader picks one. Build it on its own, from any data directory:
 
 ```bash
-python make_report.py    # every tag in snapshots/ → output/report.html
+uv run jbix-site                                    # current directory → output/site/
+jbix-site --data-dir ../jbi-drift --out _site       # another repository's data
 ```
 
-It takes no options: the report always covers the whole store and always lands at `output/report.html`, so a run never leaves a partial or stale variant behind.
+The package installs on its own (`pip install git+https://github.com/davehunt/jbix`), so a repository holding only data can build the site in CI. Each build replaces the output directory whole, so a tag that is gone leaves no stale page; it refuses to replace a directory it did not build.
 
 ## Testing
 
@@ -207,9 +209,8 @@ Issues and pull requests are welcome. Before opening a PR, please run `uv run ru
 
 ```
 jbix.py               # CLI: tag-driven sync, reverse sync, health check
-make_report.py       # Build the standalone output/report.html from snapshots/
-tags.yaml            # Component lists per whiteboard tag (for health check)
-groups.yaml          # Named tag groups (display name + tags) for --group
+tags.yaml            # Component lists per whiteboard tag (for health check); data directory
+groups.yaml          # Named tag groups (display name + tags) for --group; data directory
 jbix/
   __init__.py
   config.py          # JBI config loader (24h cache)
@@ -220,13 +221,16 @@ jbix/
   sync.py            # sync_* and reverse_sync_* functions
   health.py          # Health check + diff check with drift score
   fuzzy.py           # Fuzzy matching for link candidates
-  snapshots.py       # Per-tag drift snapshot store + aggregate_metrics
+  snapshots.py       # Per-tag history + latest-run store, aggregate_metrics
   groups.py          # Named tag groups (groups.yaml loader)
+  paths.py           # The data directory (JBIX_DATA_DIR) and the files in it
+  site.py, site.css  # The static drift site (jbix-site)
+  assets/            # The jbix mark (icon.svg, favicon.ico) and wordmark (wordmark.svg)
 tests/               # pytest suite (one test_*.py per module)
 ```
 
 Generated at runtime (all gitignored): `cache/` (data + JBI config), `snapshots/`
-(drift history), `output/` (`report.html` + audit/broken-link/candidate CSVs).
+and `latest/` (drift history and latest detail), `output/` (`site/` + audit/broken-link/candidate CSVs).
 
 ## License
 

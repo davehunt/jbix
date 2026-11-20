@@ -263,8 +263,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ignore JBI config defaults; only sync fields explicitly passed on the command line",
     )
     parser.add_argument(
-        "--no-report", action="store_true", default=False,
-        help="Skip regenerating output/report.html after a run that recorded snapshots",
+        "--no-site", "--no-report", dest="no_site", action="store_true", default=False,
+        help="Skip rebuilding the drift site (output/site/) after a run that recorded snapshots",
     )
     return parser
 
@@ -1434,15 +1434,13 @@ def main() -> None:
     else:
         write_updates_csv(all_updates)
 
-    # Regenerate the HTML report from the snapshot store after any run that
-    # recorded at least one snapshot. build_report() always writes the whole
-    # store to output/report.html — full report plus every group and per-tag
-    # view — so no per-tag or per-group loop is needed here.
-    if captured and not args.no_report:
-        import make_report
+    # Rebuild the drift site from the whole store after any run that recorded at
+    # least one snapshot, so every tag, group and overview page is current.
+    if captured and not args.no_site:
+        from jbix.site import DEFAULT_OUT, build_site
 
-        make_report.build_report()
-        print(f"\n{Colors.CYAN}→ Wrote output/report.html (all tags, group and per-tag views){Colors.RESET}")
+        out = build_site(DEFAULT_OUT)
+        print(f"\n{Colors.CYAN}→ Built the drift site: {out / 'index.html'}{Colors.RESET}")
 
 
 if __name__ == "__main__":

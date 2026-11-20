@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-7 -55 210 210" role="img" aria-labelledby="title">
+  <title id="title">JBIX crossover</title>
+  <defs>
+    <clipPath id="green-underpass">
+      <path d="M-20-20H140.17L-20 107.41ZM216-39.22V120H15.84Z"/>
+    </clipPath>
+  </defs>
+  <g>
+    <path d="M0 10H20Q28 10 34 15L122 85Q128 90 136 90H174"
+          fill="none" stroke="#08783F" stroke-width="20" clip-path="url(#green-underpass)"/>
+    <path d="M173 80L196 90L173 100Z" fill="#08783F"/>
+    <path d="M0 90H20Q28 90 34 85L122 15Q128 10 136 10H174"
+          fill="none" stroke="#165DF5" stroke-width="20"/>
+    <path d="M173 0L196 10L173 20Z" fill="#165DF5"/>
+  </g>
+</svg>
