@@ -14,6 +14,11 @@ from jbix.constants import JIRA_SEVERITY_FIELD, Colors
 logger = logging.getLogger(__name__)
 
 JIRA_URL = os.getenv("JIRA_URL", "https://mozilla-hub.atlassian.net")
+# Where API calls go, when that is not the site itself. An Atlassian service
+# account's token only works through Atlassian's API gateway,
+# https://api.atlassian.com/ex/jira/<cloud id>, while links in Bugzilla and in the
+# report still name the site, so JIRA_URL stays the site's address.
+JIRA_API_URL = os.getenv("JIRA_API_URL") or JIRA_URL
 JIRA_API_USER = os.getenv("JIRA_API_USER")
 JIRA_API_KEY = os.getenv("JIRA_API_KEY")
 
@@ -27,7 +32,7 @@ class JiraClient:
     """
 
     def __init__(self, mode: str = "preview"):
-        self.client = JIRA(JIRA_URL, basic_auth=(JIRA_API_USER, JIRA_API_KEY))
+        self.client = JIRA(JIRA_API_URL, basic_auth=(JIRA_API_USER, JIRA_API_KEY))
         self.mode = mode
         self.updates: list[dict] = []
         self.applied: bool = False
