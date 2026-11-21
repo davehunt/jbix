@@ -439,6 +439,27 @@ class TestJiraKeyFromLink:
         assert jbix_main._jira_key_from_link(
             "https://github.com/some/repo/issues/42") is None
 
+    @pytest.mark.parametrize("tail", [
+        "?atlOrigin=eyJpIjoiNzQ4ZjBmNTliNTU1NGY0YmI0YjczYWZjNThkOTNkMDMiLCJwIjoiaiJ9",
+        "#comment-123", "/", "?focusedCommentId=1",
+    ])
+    def test_query_fragment_and_slash_are_not_part_of_the_key(self, tail):
+        assert jbix_main._jira_key_from_link(
+            f"https://mozilla-hub.atlassian.net/browse/AIACT-148{tail}") == "AIACT-148"
+
+    def test_a_lowercase_key_is_the_same_issue(self):
+        assert jbix_main._jira_key_from_link(
+            "https://mozilla-hub.atlassian.net/browse/fxp-100") == "FXP-100"
+
+    @pytest.mark.parametrize("link", [
+        "https://mozilla-hub.atlassian.net/browse/FXP",          # a project, not an issue
+        "https://mozilla-hub.atlassian.net/browse/FXP-",
+        "https://mozilla-hub.atlassian.net/browse/FXP-12abc",    # not a whole key
+        "https://mozilla-hub.atlassian.net/browse/",
+    ])
+    def test_anything_but_an_issue_key_is_none(self, link):
+        assert jbix_main._jira_key_from_link(link) is None
+
     def test_bugzilla_link(self):
         assert jbix_main._jira_key_from_link(
             "https://bugzilla.mozilla.org/show_bug.cgi?id=999") is None
