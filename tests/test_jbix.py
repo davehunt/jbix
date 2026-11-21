@@ -1,6 +1,7 @@
 """Tests for functions in jbix.py — loaded via importlib to avoid name clash with jbix/ package."""
 
 import importlib.util
+import json
 import os
 import pathlib
 import time
@@ -1169,3 +1170,64 @@ class TestFetchBugzilla:
             result = jbix_main._fetch_bugzilla("fxp", bugz)
         assert result == []
         assert bugz.client.query.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Moved and missing Jira keys, remembered between runs
+# ---------------------------------------------------------------------------
+
+
+class TestKeyMoves:
+    from datetime import date as _date
+    TODAY = _date(2026, 11, 21)
+
+    def test_keeps_only_moves_and_missing_keys(self, tmp_path):
+        path = tmp_path / "moves.json"
+        cache = {"GENAI-1": "AIFE-1", "FXP-2": "FXP-2", "OLD-3": jbix_main._KEY_MISSING}
+        assert jbix_main.save_key_moves(cache, {}, path, today=self.TODAY) == 2
+        saved = json.loads(path.read_text())
+        assert saved == {"GENAI-1": {"key": "AIFE-1", "checked": "2026-11-21"},
+                         "OLD-3": {"key": None, "checked": "2026-11-21"}}
+
+    def test_round_trip_seeds_the_next_run(self, tmp_path):
+        path = tmp_path / "moves.json"
+        jbix_main.save_key_moves({"GENAI-1": "AIFE-1", "OLD-3": jbix_main._KEY_MISSING}, {},
+                                 path, today=self.TODAY)
+        cache, checked = jbix_main.load_key_moves(path, today=self.TODAY)
+        assert cache == {"GENAI-1": "AIFE-1", "OLD-3": jbix_main._KEY_MISSING}
+        assert checked == {"GENAI-1": self.TODAY, "OLD-3": self.TODAY}
+
+    def test_remembered_entries_keep_the_day_they_were_checked(self, tmp_path):
+        from datetime import timedelta
+        path = tmp_path / "moves.json"
+        earlier = self.TODAY - timedelta(days=10)
+        jbix_main.save_key_moves({"GENAI-1": "AIFE-1"}, {}, path, today=earlier)
+        cache, checked = jbix_main.load_key_moves(path, today=self.TODAY)
+        cache["GENAI-2"] = "AIFE-2"  # learned this run
+        jbix_main.save_key_moves(cache, checked, path, today=self.TODAY)
+        saved = json.loads(path.read_text())
+        assert saved["GENAI-1"]["checked"] == earlier.isoformat()
+        assert saved["GENAI-2"]["checked"] == "2026-11-21"
+
+    def test_entries_are_rechecked_after_the_window(self, tmp_path):
+        from datetime import timedelta
+        path = tmp_path / "moves.json"
+        old = self.TODAY - timedelta(days=jbix_main.KEY_RECHECK_DAYS)
+        jbix_main.save_key_moves({"GENAI-1": "AIFE-1"}, {}, path, today=old)
+        assert jbix_main.load_key_moves(path, today=self.TODAY) == ({}, {})
+
+    @pytest.mark.parametrize("content", [None, "not json", '{"A-1": {"key": "B-1"}}',
+                                         '{"A-1": {"key": "B-1", "checked": "soon"}}'])
+    def test_missing_or_unreadable_entries_are_ignored(self, tmp_path, content):
+        path = tmp_path / "moves.json"
+        if content is not None:
+            path.write_text(content)
+        assert jbix_main.load_key_moves(path, today=self.TODAY) == ({}, {})
+
+    def test_a_remembered_move_needs_no_lookup(self):
+        client = MagicMock()
+        mapping = jbix_main._resolve_jira_keys(
+            {"GENAI-1", "OLD-3"}, client, {"GENAI-1": "AIFE-1", "OLD-3": jbix_main._KEY_MISSING})
+        assert mapping == {"GENAI-1": "AIFE-1"}
+        client.search_issues.assert_not_called()
+        client.issue.assert_not_called()

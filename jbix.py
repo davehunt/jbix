@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import csv
+import json
 import logging
 import os
 import pathlib
@@ -26,7 +27,7 @@ import sys
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import date, datetime
 
 # load_dotenv() must run before importing jbi modules: jbix/jira.py and
 # jbix/bugzilla.py read credentials via os.getenv() at module-import time.
@@ -650,6 +651,52 @@ def _collect_external_ids(bugzilla_bugs: dict, enabled: set) -> set[int]:
 # Sentinel stored in the resolution cache for keys confirmed not to exist in Jira.
 _KEY_MISSING = object()
 
+# What key resolution learned, kept between runs. Only the expensive answers are
+# kept: keys that moved project (each found by a GET of its own) and keys that do
+# not exist. A key found as it is costs a share of one batched search, so it is
+# looked up again. Each entry is rechecked after KEY_RECHECK_DAYS, since an issue
+# can move again. In GitHub Actions, cache/ lives in the Actions cache.
+KEY_MOVES_PATH = pathlib.Path("cache", "jira_key_moves.json")
+KEY_RECHECK_DAYS = 30
+
+
+def load_key_moves(path: pathlib.Path = KEY_MOVES_PATH, today: date | None = None) -> tuple[dict, dict]:
+    """Return (cache, checked): a resolution cache seeded with the entries still
+    fresh, and the day each was last checked. Missing or unreadable is empty."""
+    today = today or date.today()
+    try:
+        saved = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}, {}
+    cache, checked = {}, {}
+    for key, entry in saved.items():
+        try:
+            day = date.fromisoformat(entry["checked"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (today - day).days < KEY_RECHECK_DAYS:
+            cache[key] = _KEY_MISSING if entry.get("key") is None else entry["key"]
+            checked[key] = day
+    return cache, checked
+
+
+def save_key_moves(cache: dict, checked: dict, path: pathlib.Path = KEY_MOVES_PATH,
+                   today: date | None = None) -> int:
+    """Write the moved and missing keys in ``cache``, keeping the day each was
+    checked (today for those learned this run); return how many were written."""
+    today = today or date.today()
+    out = {}
+    for key, value in sorted(cache.items()):
+        if value is _KEY_MISSING:
+            out[key] = {"key": None, "checked": checked.get(key, today).isoformat()}
+        elif value != key:
+            out[key] = {"key": value, "checked": checked.get(key, today).isoformat()}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(out, indent=1) + "\n")
+    os.replace(tmp, path)
+    return len(out)
+
 
 def _resolve_jira_keys(keys: set[str], jira_client, cache: dict) -> dict[str, str]:
     """Map each Jira key to its current key, following project renames.
@@ -1272,8 +1319,11 @@ def main() -> None:
     per_tag_metrics: list[dict] = []
     run_ts = datetime.now()       # shared by every snapshot recorded this run
     captured = False              # True once any tag records a snapshot
-    # Shared across tags so a renamed key is resolved (and missing keys recorded) only once.
-    resolved_key_cache: dict = {}
+    # Shared across tags so a renamed key is resolved (and missing keys recorded) only
+    # once, and seeded from earlier runs (load_key_moves) so it is not resolved daily.
+    resolved_key_cache, key_checked = load_key_moves()
+    if resolved_key_cache:
+        logger.info(f"Remembered {len(resolved_key_cache)} moved or missing Jira keys from earlier runs")
     # Jira project → this run's pickled issues, so a project shared by several tags
     # is fetched once. See _load_jira_issues.
     jira_memo: dict = {}
@@ -1432,6 +1482,9 @@ def main() -> None:
             jira.updates = []
             bugz.applied = False
             jira.applied = False
+
+    saved = save_key_moves(resolved_key_cache, key_checked)
+    logger.debug(f"Saved {saved} moved or missing Jira keys to {KEY_MOVES_PATH}")
 
     if is_check:
         # Cross-tag totals to the console (only meaningful with more than one tag)
