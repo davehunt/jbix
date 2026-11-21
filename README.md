@@ -157,6 +157,8 @@ On each run, only the stale side is re-fetched. Several tags can map to one Jira
 
 Use `--refresh` to bypass the cache and force a full re-fetch. The cache status line will show `forced (Xm old)` or `forced (no cache)` when `--refresh` is active.
 
+One more file lasts between runs, and `--refresh` leaves it alone: `cache/jira_key_moves.json`, the Jira keys found to have moved project (old key to new) or not to exist. Bugzilla often still links an issue's old key, and finding where it went costs a request per key, so each is looked up once and then remembered, and rechecked after 30 days in case it moves again. Delete the file to look them all up afresh.
+
 ## Cross-project linking
 
 When `--dependencies`, `--duplicates`, or `--see-also` are enabled, bugs referenced by those fields that do not carry the whiteboard tag are fetched separately from Bugzilla and injected as lightweight lookup entries. This allows sync functions to create Jira issue links even when the dependency lives in a different Bugzilla component or Jira project.
