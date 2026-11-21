@@ -80,6 +80,9 @@ JIRA_LEGACY_URL = os.getenv("JIRA_LEGACY_URL", "https://jira.mozilla.com")
 # Browse-URL prefixes recognized when parsing a Jira key OUT of a see_also link.
 # (Display/link construction always uses the canonical JIRA_LINK_PREFIX.)
 JIRA_BROWSE_PREFIXES = tuple(f"{u}/browse/" for u in (JIRA_URL, JIRA_LEGACY_URL) if u)
+# An issue key at the start of what follows /browse/, and nothing after it that
+# is part of the key: PROJECT-123, in any case, then a query, fragment or slash.
+_JIRA_KEY_RE = re.compile(r"[A-Z][A-Z0-9_]*-\d+(?=$|[?#/])", re.IGNORECASE)
 
 
 def _jira_key_from_link(link) -> str | None:
@@ -93,7 +96,11 @@ def _jira_key_from_link(link) -> str | None:
         return None
     for prefix in JIRA_BROWSE_PREFIXES:
         if link.startswith(prefix):
-            return link[len(prefix):]
+            # A link can carry a query (Atlassian's ?atlOrigin=… tracking), a
+            # fragment or a trailing slash, none of which is part of the key; and
+            # a project page (/browse/FXP) is not an issue at all.
+            match = _JIRA_KEY_RE.match(link[len(prefix):])
+            return match.group(0).upper() if match else None  # Jira accepts any case
     return None
 BUGZILLA_URL = os.getenv("BUGZILLA_URL", "bugzilla.mozilla.org")
 _BUGZILLA_BUG_URL_RE = re.compile(rf"https?://{re.escape(BUGZILLA_URL)}/show_bug\.cgi\?id=(\d+)")
