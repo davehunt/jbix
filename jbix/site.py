@@ -62,6 +62,14 @@ REASONS = {
     "unlinked": "The bug links to it, but the issue is not linked back",
 }
 DIRECTIONS = {"bug→jira": "Bugzilla → Jira", "jira→bug": "Jira → Bugzilla"}
+# How to fix each kind of broken link, shown under a list of them. Unlike drift,
+# none of these is fixed by a sync: each needs a person, in Bugzilla or in Jira.
+FIXES = {
+    "dead-jira": "Remove or correct the see-also link in Bugzilla.",
+    "stale-label": "Remove the tag's label from the Jira issue, or link the issue from the bug it belongs to.",
+    "whiteboard-removed": "Put the whiteboard tag back on the bug, or remove the tag's label from the Jira issue.",
+    "unlinked": "Check that the bug's see-also link names this issue by its current key.",
+}
 
 # Drawn, like the theme icons, so it is the same size everywhere.
 CHEVRON = ('<svg class="chevron" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">'
@@ -229,12 +237,42 @@ def _nice_max(v: float) -> float:
     return 100
 
 
-def line_chart(points: list[Point], title: str) -> str:
-    """Drift % over time: one series, hairline grid, end label, hover crosshair."""
+def _nice_count_max(v: float) -> int:
+    """A round top for a count axis whose half is a whole number too: 2, 4, 10, 20, 40, 100..."""
+    step = 1
+    while True:
+        for m in (2, 4, 10):
+            if v <= m * step:
+                return m * step
+        step *= 10
+
+
+# What a line chart plots: how to get the value, label the axis, the end and the tooltip.
+MEASURES = {
+    "drift": {
+        "value": lambda p: p.drift * 100,
+        "top": lambda vmax: _nice_max(vmax * 1.1) if vmax else 1,  # all in sync: 0% to 1%
+        "tick": lambda t: f"{t:g}%",
+        "text": lambda p: pct(p.drift),
+        "detail": lambda p: f"{num(p.drifted)} of {num(p.pairs)} pairs",
+    },
+    "broken": {
+        "value": lambda p: p.broken,
+        "top": lambda vmax: _nice_count_max(vmax * 1.1) if vmax else 2,  # none: 0 to 2
+        "tick": lambda t: num(int(t)),
+        "text": lambda p: num(p.broken),
+        "detail": lambda p: f"{num(p.broken)} broken link{'s' if p.broken != 1 else ''}",
+    },
+}
+
+
+def line_chart(points: list[Point], title: str, measure: str = "drift") -> str:
+    """A measure over time: one series, hairline grid, end label, hover crosshair."""
+    m = MEASURES[measure]
     w, h, left, right, top, bottom = 960, 220, 44, 64, 14, 26
     pw, ph = w - left - right, h - top - bottom
-    values = [p.drift * 100 for p in points]
-    ymax = _nice_max(max(values) * 1.1) if max(values) else 1  # all in sync: 0% to 1%
+    values = [m["value"](p) for p in points]
+    ymax = m["top"](max(values))
     d0, d1 = points[0].day.toordinal(), points[-1].day.toordinal()
     span = max(d1 - d0, 1)
 
@@ -247,7 +285,7 @@ def line_chart(points: list[Point], title: str) -> str:
     grid = []
     for t in (0, ymax / 2, ymax):
         yy = y(t)
-        label = f"{t:g}%"
+        label = m["tick"](t)
         grid.append(f'<line class="grid" x1="{left}" x2="{left + pw}" y1="{yy:.1f}" y2="{yy:.1f}"/>'
                     f'<text class="tick" x="{left - 6}" y="{yy + 4:.1f}" text-anchor="end">{label}</text>')
     xlabels = [(points[0], short_date(points[0].day))]
@@ -274,16 +312,15 @@ def line_chart(points: list[Point], title: str) -> str:
         marks.append(f'<path class="line" d="{path}"/>')
     ex, ey = coords[-1]
     marks.append(f'<circle class="dot" cx="{ex:.1f}" cy="{ey:.1f}" r="4"/>')
-    marks.append(f'<text class="end-label" x="{ex + 8:.1f}" y="{ey + 4:.1f}">{pct(points[-1].drift)}</text>')
+    marks.append(f'<text class="end-label" x="{ex + 8:.1f}" y="{ey + 4:.1f}">{m["text"](points[-1])}</text>')
 
-    data = [[round(cx, 1), round(cy, 1),
-             f"{long_date(p.day)} · {num(p.drifted)} of {num(p.pairs)} pairs", pct(p.drift)]
+    data = [[round(cx, 1), round(cy, 1), f"{long_date(p.day)} · {m['detail'](p)}", m["text"](p)]
             for (cx, cy), p in zip(coords, points)]
     first, last = points[0], points[-1]
-    summary = (f"{title}: {pct(first.drift)} on {long_date(first.day)}"
-               + (f", {pct(last.drift)} on {long_date(last.day)}" if len(points) > 1 else ""))
+    summary = (f"{title}: {m['text'](first)} on {long_date(first.day)}"
+               + (f", {m['text'](last)} on {long_date(last.day)}" if len(points) > 1 else ""))
     return (
-        f'<figure class="chart" data-points="{e(json.dumps(data))}" tabindex="0" '
+        f'<figure class="chart {measure}" data-points="{e(json.dumps(data))}" tabindex="0" '
         f'aria-label="{e(summary)}. Use the arrow keys to step through the days.">'
         f'<figcaption>{e(title)}</figcaption>'
         f'<svg viewBox="0 0 {w} {h}" role="img" aria-label="{e(summary)}">'
@@ -336,6 +373,9 @@ def field_bars(fields: list[dict], pairs: int) -> str:
 
 # -- page parts ---------------------------------------------------------------
 
+INFO_ICON = ('<svg class="icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">'
+             '<circle cx="8" cy="8" r="7" fill="currentColor"/>'
+             '<path d="M8 7.2v4.3M8 4.6v.3" stroke="var(--page)" stroke-width="1.6" stroke-linecap="round"/></svg>')
 ICONS = {"warn": WARN_ICON, "crit": CRIT_ICON, "good": GOOD_ICON}
 
 # What a section says when it has nothing to list: good news, so marked as such.
@@ -532,22 +572,64 @@ def fixing_section(tag: str, fields: list[dict]) -> str:
     )
 
 
-def broken_table(latest: dict) -> str:
-    rows = latest.get("broken_links") or []
-    total = latest.get("broken_links_total", len(rows))
+def broken_table(rows: list[dict], total: int, prefix: str | None = None,
+                 csv_href: str | None = None) -> str:
+    """Broken links as a table, then how to fix each kind present.
+
+    Given ``prefix``, each row also names its tag (``row["tag"]``), linked to the
+    tag's page, as a group page lists several tags' links together.
+    """
     if not rows:
         return ALL_CLEAR
+    with_tag = prefix is not None
+
+    def tag_cell(r):
+        if not with_tag:
+            return ""
+        t = r["tag"]
+        return f'<td data-v="{e(t)}"><a href="{prefix}tags/{e(slug(t))}.html#broken">{e(t)}</a></td>'
+
     body = "".join(
-        f'<tr><td>{e(DIRECTIONS.get(r.get("direction", ""), r.get("direction", "")))}</td>'
-        f'<td>{link(r.get("bug_url"), str(r.get("bug_id") or "—"))}</td>'
-        f'<td>{link(r.get("jira_url"), r.get("jira_key", ""))}</td>'
-        f'<td>{e(REASONS.get(r.get("reason", ""), r.get("reason", "")))}</td></tr>'
+        f'<tr>{tag_cell(r)}'
+        f'<td data-v="{e(r.get("direction", ""))}">{e(DIRECTIONS.get(r.get("direction", ""), r.get("direction", "")))}</td>'
+        f'<td data-v="{e(str(r.get("bug_id") or ""))}">{link(r.get("bug_url"), str(r.get("bug_id") or "—"))}</td>'
+        f'<td data-v="{e(r.get("jira_key", ""))}">{link(r.get("jira_url"), r.get("jira_key", ""))}</td>'
+        f'<td data-v="{e(r.get("reason", ""))}">{e(REASONS.get(r.get("reason", ""), r.get("reason", "")))}</td></tr>'
         for r in rows)
-    note = (f'<p class="muted">Showing the first {num(len(rows))} of {num(total)}.</p>'
-            if total > len(rows) else "")
-    return ('<div class="table-wrap"><table><thead><tr><th scope="col">Direction</th><th scope="col">Bug</th>'
-            '<th scope="col">Jira issue</th><th scope="col">Why it is broken</th></tr></thead>'
-            f'<tbody>{body}</tbody></table></div>{note}')
+    heads = ([sort_head("Tag", "text")] if with_tag else []) + [
+        sort_head("Direction", "text"), sort_head("Bug", "text"), sort_head("Jira issue", "text"),
+        sort_head("Why it is broken", "text")]
+    listed = (f"Listing {num(len(rows))} of {num(total)}." if total > len(rows) else "")
+    download = (f' <a href="{e(csv_href)}" download>Download all {num(len(rows))} (CSV)</a>'
+                if csv_href else "")
+    note = f'<p class="table-note muted">{listed}{download}</p>' if listed or download else ""
+    present = [r for r in FIXES if any(row.get("reason") == r for row in rows)]
+    fixes = ('<aside class="callout info" aria-label="How to fix these">'
+             f'<p class="callout-title">{INFO_ICON}How to fix these</p><ul class="fixes">'
+             + "".join(f"<li><strong>{e(REASONS[r])}:</strong> {e(FIXES[r])}</li>" for r in present)
+             + "</ul></aside>" if present else "")
+    return ('<div class="table-wrap"><table class="sortable"><thead><tr>' + "".join(heads)
+            + f'</tr></thead><tbody>{body}</tbody></table></div>{note}{fixes}')
+
+
+def write_broken_csv(path: pathlib.Path, rows: list[dict]) -> None:
+    """Broken links, with their tag, as a CSV to download."""
+    import csv
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["tag", "direction", "bug_id", "bug_url", "jira_key", "jira_url", "why"])
+        for r in rows:
+            w.writerow([r["tag"], DIRECTIONS.get(r.get("direction", ""), r.get("direction", "")),
+                        r.get("bug_id") or "", r.get("bug_url") or "", r.get("jira_key", ""),
+                        r.get("jira_url", ""), REASONS.get(r.get("reason", ""), r.get("reason", ""))])
+
+
+def tagged_broken(tags: list["Tag"]) -> tuple[list[dict], int]:
+    """Every broken link the latest runs of ``tags`` recorded, each with its tag, and their total."""
+    rows = [{**r, "tag": t.name} for t in sorted(tags, key=lambda t: t.name)
+            for r in t.latest.get("broken_links") or []]
+    total = sum(t.latest.get("broken_links_total", len(t.latest.get("broken_links") or [])) for t in tags)
+    return rows, total
 
 
 def _clip(value: str, n: int = 80) -> str:
@@ -826,14 +908,17 @@ Built by <a href="{REPO_URL}">JBIX</a>.</footer>
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(doc, encoding="utf-8")
 
-    def overview(self, title: str, lede: str, tags: list[Tag], prefix: str, extra: str = "") -> str:
+    def overview(self, title: str, lede: str, tags: list[Tag], prefix: str, extra: str = "",
+                 broken: str = "") -> str:
         series = combine(tags)
         return (f"<h1>{e(title)}</h1><p class=\"lede\">{lede}</p>"
                 + summary_tiles(series[-1], len(tags))
                 + line_chart(series, "Drifted pairs")
+                + line_chart(series, "Broken links", "broken")
                 + history_table(series)
                 + extra
-                + f'<h2 id="tags">Tags</h2>{tag_table(tags, prefix, self.newest)}')
+                + f'<h2 id="tags">Tags</h2>{tag_table(tags, prefix, self.newest)}'
+                + broken)
 
     def groups_table(self) -> str:
         if not self.groups:
@@ -887,13 +972,16 @@ Built by <a href="{REPO_URL}">JBIX</a>.</footer>
             f'{e(t.project)}.</p>'
             + stale + tiles(cards)
             + line_chart(t.history, "Drifted pairs")
+            + line_chart(t.history, "Broken links", "broken")
             + history_table(t.history)
             + '<h2 id="fields">Drifted fields</h2>'
             + field_bars(diff.get("fields") or [], now.pairs)
             + '<h2 id="drift">Drifted pairs</h2>'
             + drift_rows_table(diff, f"{slug(t.name)}-changes.csv" if t.changes_csv else None)
             + (fixing_section(t.name, diff.get("fields") or []) if now.drifted else "")
-            + f'<h2 id="broken">Broken links</h2>{broken_table(latest)}'
+            + '<h2 id="broken">Broken links</h2>'
+            + broken_table(latest.get("broken_links") or [],
+                           latest.get("broken_links_total", len(latest.get("broken_links") or [])))
             + more)
 
     def build(self, out: pathlib.Path) -> None:
@@ -914,8 +1002,15 @@ Built by <a href="{REPO_URL}">JBIX</a>.</footer>
             name = self.names.get(g, g)
             tags = [self.tags[t] for t in members]
             lede = f"How closely Jira matches Bugzilla across the {e(name)} group's {len(tags)} tag{'s' if len(tags) != 1 else ''}."
+            rows, total = tagged_broken(tags)
+            csv_name = f"{slug(g)}-broken-links.csv"
+            if rows:
+                (out / "groups").mkdir(parents=True, exist_ok=True)
+                write_broken_csv(out / "groups" / csv_name, rows)
+            group_broken = ('<h2 id="broken">Broken links</h2>'
+                            + broken_table(rows, total, "../", csv_name if rows else None))
             self.page(out, f"groups/{slug(g)}.html", name, f"group:{g}",
-                      self.overview(name, lede, tags, "../"))
+                      self.overview(name, lede, tags, "../", broken=group_broken))
         for t in everything:
             self.page(out, f"tags/{slug(t.name)}.html", f"[{t.name}]", "", self.tag_page(t))
             if t.changes_csv:
