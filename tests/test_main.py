@@ -80,9 +80,15 @@ class World:
                 _issue("FXP-4", "P1", "Perf tag, same project", labels=("bugzilla", "perf")),
                 # Labelled for fxp, but no bug links to it: an orphan.
                 _issue("FXP-9", "P1", "Orphan"),
+                _issue("FXP-8", "P1", "Orphan of a restricted bug"),
             ],
         }
         self.moved = {"GENAI-5": "AIFE-5"}
+        # An orphan whose bug is restricted: anonymous Bugzilla cannot see bug 99,
+        # and only FXP-8's remote link says it is the issue's bug.
+        self.remote_links = {"FXP-8": [99]}
+        self.restricted = {99}
+        self.remote_link_lookups: list[str] = []
         self.live_other = {"AIFE-5"}  # issues outside the fetched projects that exist
         self.project_fetches: list[str] = []
         self.single_lookups: list[str] = []
@@ -97,6 +103,9 @@ class World:
         client.build_query.side_effect = lambda **kw: dict(kw)
 
         def query(q):
+            if "id" in q:  # a visibility check by bug id: restricted bugs are not returned
+                ids = [int(x) for x in str(q["id"]).split(",")]
+                return [SimpleNamespace(id=i, groups=[]) for i in ids if i not in self.restricted]
             if "status_whiteboard" not in q:
                 return []  # see-also lookups for orphans: nothing references them
             pattern = re.compile(q["status_whiteboard"])
@@ -106,6 +115,12 @@ class World:
 
         client.query.side_effect = query
         client.getbugs.return_value = []
+
+        def getbug(bug_id, **kw):
+            from bugzilla.exceptions import BugzillaError
+            raise BugzillaError("no", code=102 if bug_id in self.restricted else 101)
+
+        client.getbug.side_effect = getbug
         counts = iter([10, 3] * 10)  # component total, then tagged, per count pair
         client._backend.bug_search.side_effect = lambda params: {"bug_count": next(counts)}
         return client
@@ -115,7 +130,12 @@ class World:
     def jira_client(self):
         client = MagicMock()
         client.project_components.return_value = []
-        client.remote_links.return_value = []
+        def remote_links(key):
+            self.remote_link_lookups.append(key)
+            return [SimpleNamespace(object=SimpleNamespace(
+                url=f"https://bugzilla.mozilla.org/show_bug.cgi?id={b}")) for b in self.remote_links.get(key, [])]
+
+        client.remote_links.side_effect = remote_links
 
         def search_issues(jql, **kw):
             if jql.startswith("project = "):
@@ -303,3 +323,17 @@ def test_no_known_tags_exits(world, monkeypatch):
 def test_all_tags_less_the_excluded(world, monkeypatch):
     run(monkeypatch, "--all-tags", "--exclude-tags", "perf", "--mode", "check", "--no-site")
     assert history(world, "fxp") and not history(world, "perf")
+
+
+def test_an_orphan_of_a_restricted_bug_is_not_a_broken_link(world, monkeypatch):
+    run(monkeypatch, "--tags", "fxp", "--mode", "check", "--no-site")
+    orphans = [b["jira_key"] for b in latest(world, "fxp")["broken_links"] if b["reason"] == "stale-label"]
+    assert orphans == ["FXP-9"]  # FXP-8's bug is restricted, so it is not reported
+    assert history(world, "fxp")[0]["broken_links"] == 1
+    remembered = json.loads(pathlib.Path("cache", "jira_orphan_bugs.json").read_text())
+    assert remembered["FXP-8"]["bugs"] == [99]
+
+    world.remote_link_lookups.clear()
+    run(monkeypatch, "--tags", "fxp", "--mode", "check", "--no-site", "--refresh")
+    assert world.remote_link_lookups == []  # remembered, not looked up again
+    assert [b["jira_key"] for b in latest(world, "fxp")["broken_links"]] == ["FXP-9"]

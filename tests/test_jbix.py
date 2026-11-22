@@ -1231,3 +1231,66 @@ class TestKeyMoves:
         assert mapping == {"GENAI-1": "AIFE-1"}
         client.search_issues.assert_not_called()
         client.issue.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Orphans whose bug is restricted are not broken links
+# ---------------------------------------------------------------------------
+
+
+class TestRestrictedOrphans:
+    @staticmethod
+    def _link(url):
+        return MagicMock(object=MagicMock(url=url))
+
+    def test_bug_ids_come_from_remote_links_and_are_remembered(self):
+        client = MagicMock()
+        client.remote_links.return_value = [
+            self._link("https://bugzilla.mozilla.org/show_bug.cgi?id=1000001"),
+            self._link("https://bugzil.la/42"), self._link("https://example.com/not-a-bug")]
+        cache = {}
+        assert jbix_main._orphan_bug_ids("FXP-50", client, cache) == [42, 1000001]
+        assert jbix_main._orphan_bug_ids("FXP-50", client, cache) == [42, 1000001]
+        client.remote_links.assert_called_once()  # the second came from the cache
+
+    def test_a_bug_is_restricted_if_visible_in_a_group_or_refused_as_unauthorised(self):
+        from bugzilla.exceptions import BugzillaError
+        bugz = MagicMock()
+        bugz.client.query.return_value = [MagicMock(id=1, groups=[]),
+                                          MagicMock(id=2, groups=["core-security"])]
+
+        def getbug(bug_id, **kw):  # 3 and 4 are not returned by the query
+            raise BugzillaError("no", code=102 if bug_id == 3 else 101)
+
+        bugz.client.getbug.side_effect = getbug
+        assert jbix_main._restricted_bugs([1, 2, 3, 4], bugz) == {2, 3}
+        assert bugz.client.query.call_args.args[0]["id"] == "1,2,3,4"  # one batched query
+        assert {c.args[0] for c in bugz.client.getbug.call_args_list} == {3, 4}
+
+    def test_an_orphan_whose_bug_is_restricted_is_left_out(self):
+        from bugzilla.exceptions import BugzillaError
+        jira_issues = {k: {"labels": ["bugzilla", "fxp"]} for k in ("FXP-1", "FXP-2")}
+        bugz = MagicMock()
+        bugz.client.query.return_value = []  # nothing visible, by see-also or by id
+        bugz.client.getbug.side_effect = lambda bug_id, **kw: (_ for _ in ()).throw(
+            BugzillaError("no", code=102 if bug_id == 11 else 101))
+        client = MagicMock()
+        client.remote_links.side_effect = lambda key: (
+            [self._link(f"https://bugzil.la/{11 if key == 'FXP-1' else 22}")])
+        rows = jbix_main.find_orphaned_issues("fxp", {}, jira_issues, bugz, jira_client=client)
+        assert [r["jira_key"] for r in rows] == ["FXP-2"]  # FXP-1's bug is restricted
+        assert rows[0]["reason"] == "stale-label"
+
+    def test_without_a_jira_client_nothing_is_looked_up(self):
+        bugz = MagicMock()
+        bugz.client.query.return_value = []
+        rows = jbix_main.find_orphaned_issues(
+            "fxp", {}, {"FXP-1": {"labels": ["bugzilla", "fxp"]}}, bugz)
+        assert [r["jira_key"] for r in rows] == ["FXP-1"]
+        bugz.client.getbug.assert_not_called()
+
+    def test_orphan_bugs_round_trip(self, tmp_path):
+        from datetime import date
+        path = tmp_path / "orphans.json"
+        jbix_main.save_orphan_bugs({"FXP-1": [11], "FXP-2": []}, {}, path, today=date(2026, 11, 22))
+        assert jbix_main.load_orphan_bugs(path, today=date(2026, 11, 22))[0] == {"FXP-1": [11], "FXP-2": []}

@@ -36,6 +36,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import yaml
+from bugzilla.exceptions import BugzillaError
 from jira.exceptions import JIRAError
 
 import jbix.sync as sync_fns
@@ -660,42 +661,70 @@ KEY_MOVES_PATH = pathlib.Path("cache", "jira_key_moves.json")
 KEY_RECHECK_DAYS = 30
 
 
-def load_key_moves(path: pathlib.Path = KEY_MOVES_PATH, today: date | None = None) -> tuple[dict, dict]:
-    """Return (cache, checked): a resolution cache seeded with the entries still
-    fresh, and the day each was last checked. Missing or unreadable is empty."""
-    today = today or date.today()
+def _load_dated(path: pathlib.Path, field: str, today: date) -> dict[str, tuple]:
+    """Entries of a remembered-answers file still inside KEY_RECHECK_DAYS, as
+    {key: (value, day checked)}. Missing, unreadable or malformed entries are left out."""
     try:
         saved = json.loads(path.read_text())
     except (OSError, ValueError):
-        return {}, {}
-    cache, checked = {}, {}
+        return {}
+    fresh = {}
     for key, entry in saved.items():
         try:
             day = date.fromisoformat(entry["checked"])
         except (KeyError, TypeError, ValueError):
             continue
         if (today - day).days < KEY_RECHECK_DAYS:
-            cache[key] = _KEY_MISSING if entry.get("key") is None else entry["key"]
-            checked[key] = day
-    return cache, checked
+            fresh[key] = (entry.get(field), day)
+    return fresh
+
+
+def _save_dated(path: pathlib.Path, field: str, entries: dict, checked: dict, today: date) -> int:
+    """Write {key: value} as a remembered-answers file, keeping the day each was
+    checked (today for those learned this run); return how many were written."""
+    out = {key: {field: value, "checked": checked.get(key, today).isoformat()}
+           for key, value in sorted(entries.items())}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(out, indent=1) + "\n")
+    os.replace(tmp, path)
+    return len(out)
+
+
+def load_key_moves(path: pathlib.Path = KEY_MOVES_PATH, today: date | None = None) -> tuple[dict, dict]:
+    """Return (cache, checked): a resolution cache seeded with the entries still
+    fresh, and the day each was last checked. Missing or unreadable is empty."""
+    fresh = _load_dated(path, "key", today or date.today())
+    cache = {k: _KEY_MISSING if v is None else v for k, (v, _) in fresh.items()}
+    return cache, {k: day for k, (_, day) in fresh.items()}
 
 
 def save_key_moves(cache: dict, checked: dict, path: pathlib.Path = KEY_MOVES_PATH,
                    today: date | None = None) -> int:
     """Write the moved and missing keys in ``cache``, keeping the day each was
     checked (today for those learned this run); return how many were written."""
-    today = today or date.today()
-    out = {}
-    for key, value in sorted(cache.items()):
-        if value is _KEY_MISSING:
-            out[key] = {"key": None, "checked": checked.get(key, today).isoformat()}
-        elif value != key:
-            out[key] = {"key": value, "checked": checked.get(key, today).isoformat()}
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(out, indent=1) + "\n")
-    os.replace(tmp, path)
-    return len(out)
+    kept = {k: None if v is _KEY_MISSING else v for k, v in cache.items()
+            if v is _KEY_MISSING or v != k}
+    return _save_dated(path, "key", kept, checked, today or date.today())
+
+
+# The Bugzilla bugs each orphaned Jira issue's remote links point at, kept between
+# runs like the key moves: finding them costs a Jira request per issue, and a
+# remote link rarely changes. Whether each bug is restricted is checked every run,
+# since a bug can be made public. See find_orphaned_issues.
+ORPHAN_BUGS_PATH = pathlib.Path("cache", "jira_orphan_bugs.json")
+
+
+def load_orphan_bugs(path: pathlib.Path = ORPHAN_BUGS_PATH, today: date | None = None) -> tuple[dict, dict]:
+    """Return (cache, checked): {issue key: [bug ids]} still fresh, and when each was checked."""
+    fresh = _load_dated(path, "bugs", today or date.today())
+    return ({k: [int(b) for b in (v or [])] for k, (v, _) in fresh.items()},
+            {k: day for k, (_, day) in fresh.items()})
+
+
+def save_orphan_bugs(cache: dict, checked: dict, path: pathlib.Path = ORPHAN_BUGS_PATH,
+                     today: date | None = None) -> int:
+    return _save_dated(path, "bugs", cache, checked, today or date.today())
 
 
 def _resolve_jira_keys(keys: set[str], jira_client, cache: dict) -> dict[str, str]:
@@ -853,8 +882,53 @@ def _find_bugs_via_see_also(jira_keys: list[str], bugz: BugzillaClient) -> dict[
     return found
 
 
+# A Bugzilla bug's link, as a Jira remote link records it.
+_BUG_LINK_RE = re.compile(r"(?:show_bug\.cgi\?id=|bugzil\.la/)(\d+)")
+
+
+def _orphan_bug_ids(key: str, jira_client, cache: dict) -> list[int]:
+    """The bugs a Jira issue's remote links point at, remembered in ``cache``."""
+    if key not in cache:
+        try:
+            links = jira_client.remote_links(key)
+        except JIRAError:
+            links = []
+        urls = (getattr(getattr(link, "object", None), "url", "") or "" for link in links)
+        cache[key] = sorted({int(m.group(1)) for u in urls if (m := _BUG_LINK_RE.search(u))})
+    return cache[key]
+
+
+def _restricted_bugs(bug_ids: list[int], bugz: BugzillaClient) -> set[int]:
+    """Which of ``bug_ids`` are restricted to a security group.
+
+    One batched query returns the bugs this client can see, with their groups: a
+    visible bug in a group is restricted. A bug the query does not return is asked
+    for alone, since only then does Bugzilla say why: error 102, not authorised,
+    is a restricted bug an anonymous client cannot see; 101 is no bug at all.
+    """
+    visible: dict[int, bool] = {}
+    for i in range(0, len(bug_ids), BZ_ID_BATCH_SIZE):
+        batch = bug_ids[i:i + BZ_ID_BATCH_SIZE]
+        bugs = retry_on_transient(
+            lambda b=batch: bugz.client.query(
+                {"id": ",".join(str(x) for x in b), "include_fields": ["id", "groups"]}),
+            description=f"Bugzilla visibility check ({len(batch)} bugs)",
+        ) or []
+        for bug in bugs:
+            visible[bug.id] = bool(getattr(bug, "groups", None))
+    restricted = {bug_id for bug_id, in_group in visible.items() if in_group}
+    for bug_id in (b for b in bug_ids if b not in visible):
+        try:
+            bugz.client.getbug(bug_id, include_fields=["id"])
+        except BugzillaError as e:
+            if BugzillaError.get_bugzilla_error_code(e) == 102:
+                restricted.add(bug_id)
+    return restricted
+
+
 def find_orphaned_issues(
-    tag: str, bugzilla_bugs: dict, jira_issues: dict, bugz: BugzillaClient
+    tag: str, bugzilla_bugs: dict, jira_issues: dict, bugz: BugzillaClient,
+    jira_client=None, orphan_cache: dict | None = None,
 ) -> list[dict]:
     """Return Jira issues labelled for ``tag`` that no fetched bug links to.
 
@@ -864,6 +938,11 @@ def find_orphaned_issues(
     is resolved back to its bug via ``see_also`` to record the bug id and reason
     (``whiteboard-removed`` if the bug still references it but dropped the tag;
     ``stale-label`` if nothing on the Bugzilla side references it any more).
+
+    A stale-label orphan may instead belong to a restricted bug, which an anonymous
+    client cannot see, so it would be reported as broken when it is not. Given
+    ``jira_client``, each is traced to its bugs through the issue's remote links
+    (remembered in ``orphan_cache``), and one whose bug is restricted is left out.
     """
     linked = {
         k for b in bugzilla_bugs.values() if not b.get("external")
@@ -877,8 +956,19 @@ def find_orphaned_issues(
     )
 
     found = _find_bugs_via_see_also(candidates, bugz)
+    hidden: set[str] = set()
+    stale = [k for k in candidates if k not in found]
+    if jira_client is not None and stale:
+        cache = orphan_cache if orphan_cache is not None else {}
+        bugs_of = {k: _orphan_bug_ids(k, jira_client, cache) for k in stale}
+        restricted = _restricted_bugs(sorted({b for ids in bugs_of.values() for b in ids}), bugz)
+        hidden = {k for k, ids in bugs_of.items() if restricted & set(ids)}
+        if hidden:
+            logger.info(f"[{tag}] Left out {len(hidden)} orphaned Jira issue(s) whose bug is restricted")
     rows = []
     for key in candidates:
+        if key in hidden:
+            continue
         bug = found.get(key)
         if bug is not None and bug.get("restricted"):
             continue  # a restricted bug's id stays out of the report
@@ -905,7 +995,7 @@ def find_orphaned_issues(
 
 def find_broken_links(
     bugzilla_bugs: dict, dropped: list, jira_client, cache: dict,
-    *, tag: str, jira_issues: dict, bugz: BugzillaClient,
+    *, tag: str, jira_issues: dict, bugz: BugzillaClient, orphan_cache: dict | None = None,
 ) -> list[dict]:
     """Return broken links in both directions, tagged with a ``direction`` field.
 
@@ -947,7 +1037,8 @@ def find_broken_links(
                 })
         rows.sort(key=lambda r: (r["bug_id"], r["jira_key"]))
 
-    rows.extend(find_orphaned_issues(tag, bugzilla_bugs, jira_issues, bugz))
+    rows.extend(find_orphaned_issues(tag, bugzilla_bugs, jira_issues, bugz,
+                                     jira_client=jira_client, orphan_cache=orphan_cache))
     return rows
 
 
@@ -1322,6 +1413,8 @@ def main() -> None:
     # Shared across tags so a renamed key is resolved (and missing keys recorded) only
     # once, and seeded from earlier runs (load_key_moves) so it is not resolved daily.
     resolved_key_cache, key_checked = load_key_moves()
+    # Which bugs each orphaned Jira issue belongs to, likewise kept between runs.
+    orphan_bugs, orphan_checked = load_orphan_bugs()
     if resolved_key_cache:
         logger.info(f"Remembered {len(resolved_key_cache)} moved or missing Jira keys from earlier runs")
     # Jira project → this run's pickled issues, so a project shared by several tags
@@ -1424,7 +1517,7 @@ def main() -> None:
                 diff_metrics = run_diff_check(jira.updates, bugzilla_bugs, enabled)
             broken_links = find_broken_links(
                 bugzilla_bugs, dropped_jira_keys, jira.client, resolved_key_cache,
-                tag=tag, jira_issues=jira_issues, bugz=bugz,
+                tag=tag, jira_issues=jira_issues, bugz=bugz, orphan_cache=orphan_bugs,
             )
             print_broken_links(broken_links)
             write_broken_links_csv(tag, broken_links)
@@ -1465,7 +1558,7 @@ def main() -> None:
                 )
                 broken_links = find_broken_links(
                     bugzilla_bugs, dropped_jira_keys, jira.client, resolved_key_cache,
-                    tag=tag, jira_issues=jira_issues, bugz=bugz,
+                    tag=tag, jira_issues=jira_issues, bugz=bugz, orphan_cache=orphan_bugs,
                 )
                 record_snapshot(tag, jira_project, health_metrics, diff_metrics, run_ts,
                                 broken_links=broken_links)
@@ -1483,6 +1576,7 @@ def main() -> None:
             bugz.applied = False
             jira.applied = False
 
+    save_orphan_bugs(orphan_bugs, orphan_checked)
     saved = save_key_moves(resolved_key_cache, key_checked)
     logger.debug(f"Saved {saved} moved or missing Jira keys to {KEY_MOVES_PATH}")
 
