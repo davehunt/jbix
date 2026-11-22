@@ -432,3 +432,79 @@ def test_no_drift_means_no_fixing_section(data_dir, tmp_path):
     drift = doc[doc.index('id="drift"'):doc.index('id="broken"')]
     assert '<p class="all-clear good">' in drift and "None.</p>" in drift
     assert "Bugzilla is the authority" not in drift
+
+
+# -- broken links: the trend, and every link in a group -------------------------
+
+def _broken(n, reason="dead-jira", key="FP"):
+    return [{"direction": "bug→jira", "bug_id": i, "bug_url": f"https://bugzil.la/{i}",
+             "jira_key": f"{key}-{i}", "jira_url": f"https://j/{key}-{i}", "reason": reason}
+            for i in range(1, n + 1)]
+
+
+def test_every_page_charts_broken_links_over_time(data_dir, tmp_path):
+    for day, n in ((1, 3), (2, 5)):
+        _record("fp", date(2026, 11, day), broken=_broken(n))
+    out = _build(data_dir, tmp_path)
+    for page in ("index.html", "groups/perf.html", "tags/fp.html"):
+        doc = (out / page).read_text()
+        assert "<figcaption>Broken links</figcaption>" in doc, page
+        assert "5 broken links" in doc  # the hover readout for the last day
+
+
+def test_a_count_axis_tops_out_at_a_round_number_with_a_whole_half():
+    assert [site._nice_count_max(v) for v in (0.5, 3, 5, 11, 39, 41, 950)] == [2, 4, 10, 20, 40, 100, 1000]
+    pts = [site.Point(date(2026, 11, d), broken=b) for d, b in ((1, 3), (2, 7))]
+    svg = site.line_chart(pts, "Broken links", "broken")
+    assert ">10</text>" in svg and ">5</text>" in svg and "%" not in svg
+
+
+def test_a_group_lists_its_tags_broken_links_with_a_csv(data_dir, tmp_path):
+    _record("fp", date(2026, 11, 1), broken=_broken(2))
+    _record("fxp", date(2026, 11, 1), project="FXP", broken=_broken(1, "stale-label", "FXP"))
+    out = _build(data_dir, tmp_path)
+    doc = (out / "groups" / "perf.html").read_text()
+    import html as html_mod
+    section = html_mod.unescape(doc[doc.index('<h2 id="broken">'):])
+    assert section.count('<a href="../tags/fp.html#broken">fp</a>') == 2
+    assert '<a href="../tags/fxp.html#broken">fxp</a>' in section
+    assert '<a href="perf-broken-links.csv" download>Download all 3 (CSV)</a>' in section
+    lines = (out / "groups" / "perf-broken-links.csv").read_text().splitlines()
+    assert lines[0] == "tag,direction,bug_id,bug_url,jira_key,jira_url,why"
+    assert len(lines) == 4
+    # How to fix each kind present, and only those
+    assert "Remove or correct the see-also link in Bugzilla." in section
+    assert "Remove the tag's label from the Jira issue" in section
+    assert "Put the whiteboard tag back" not in section
+
+
+def test_the_overview_charts_broken_links_but_does_not_list_them(data_dir, tmp_path):
+    """Nobody fixes another team's broken links, so the overview has no list or CSV of them."""
+    _record("fp", date(2026, 11, 1), broken=_broken(2))
+    out = _build(data_dir, tmp_path)
+    doc = (out / "index.html").read_text()
+    assert '<figure class="chart broken"' in doc
+    assert 'id="broken"' not in doc
+    assert not (out / "broken-links.csv").exists()
+
+
+def test_the_two_charts_are_told_apart(data_dir, tmp_path):
+    _record("fp", date(2026, 11, 1), broken=_broken(1))
+    doc = (_build(data_dir, tmp_path) / "tags" / "fp.html").read_text()
+    assert '<figure class="chart drift"' in doc and '<figure class="chart broken"' in doc
+
+
+def test_how_to_fix_is_an_info_callout(data_dir, tmp_path):
+    _record("fp", date(2026, 11, 1), broken=_broken(1))
+    doc = (_build(data_dir, tmp_path) / "tags" / "fp.html").read_text()
+    callout = doc[doc.index('<aside class="callout info"'):]
+    callout = callout[:callout.index("</aside>")]
+    assert "How to fix these" in callout and "Remove or correct the see-also link in Bugzilla." in callout
+
+
+def test_no_broken_links_anywhere_is_all_clear(data_dir, tmp_path):
+    _record("fp", date(2026, 11, 1))
+    out = _build(data_dir, tmp_path)
+    for page in ("groups/perf.html", "tags/fp.html"):
+        doc = (out / page).read_text()
+        assert '<p class="all-clear good">' in doc[doc.index('<h2 id="broken">'):]
