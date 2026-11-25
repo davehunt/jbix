@@ -254,6 +254,49 @@ MODELS_FILE = "jbi/models.py"
 # The kinds of steps the report lists: for a bug JBI already has an issue for,
 # and for one it creates an issue for.
 STEP_KINDS = ("existing", "new")
+# Fields JBI's create_issue sets itself (jbi/jira/service.py create_jira_issue),
+# so a new bug has them even without the step that updates them later.
+CREATE_ISSUE_SETS = frozenset({"summary", "type"})
+# Fields a newly filed bug cannot have yet, so syncing them for existing bugs only
+# is not a mismatch. A tag added to an older bug that already has duplicates is
+# the exception, and too rare to flag on every tag that leaves them out.
+NEVER_ON_NEW = frozenset({"duplicates"})
+
+
+def compare_steps(new: list | None, existing: list | None) -> dict:
+    """Each step for a new and an existing bug side by side, and the fields synced on one only.
+
+    A step is listed with the field it syncs (``STEP_TO_FLAG``) or None, and
+    whether each kind runs it; a kind the tag leaves to JBI's defaults is None
+    throughout, as those defaults are not copied here, so nothing is flagged.
+
+    A field-syncing step on one side only causes drift that no amount of syncing
+    clears for long: synced only for existing bugs, a new issue starts without
+    the value; synced only for new bugs, a later change in Bugzilla is never
+    copied. Steps that do not sync a field (``create_issue``, the links, the
+    comments) belong to one kind by design, so are never flagged.
+    """
+    names = list(dict.fromkeys([*(new or []), *(existing or [])]))
+    rows = [{"step": s, "field": STEP_TO_FLAG.get(s),
+             "new": None if new is None else s in new,
+             "existing": None if existing is None else s in existing} for s in names]
+    if new is None or existing is None:
+        return {"rows": rows, "existing_only": [], "new_only": []}
+
+    on_new = {STEP_TO_FLAG[s] for s in new if s in STEP_TO_FLAG}
+    on_existing = {STEP_TO_FLAG[s] for s in existing if s in STEP_TO_FLAG}
+    # create_issue covers the summary and type for a new bug. Not flagged the other
+    # way either: JBI sets the type at creation and, by default, never updates it.
+    created = CREATE_ISSUE_SETS if "create_issue" in new else set()
+    for r in rows:
+        if r["field"] in created and not r["new"]:
+            r["new_via"] = "create_issue"  # so the page does not show it as missing
+    order = list(STEP_TO_FLAG.values())
+    return {
+        "rows": rows,
+        "existing_only": [f for f in order if f in on_existing - on_new - created - NEVER_ON_NEW],
+        "new_only": [f for f in order if f in on_new - on_existing],
+    }
 
 # The maps a tag can set, by the field they translate, in the order the report lists them.
 _MAPS = {
@@ -323,6 +366,7 @@ def describe_tag(whiteboard_tag: str) -> dict:
         "source": {"commit": commit, "url": url, "lines": list(lines) if lines and commit else None,
                    "defaults_url": f"https://github.com/{JBI_REPO}/blob/{commit or 'main'}/{MODELS_FILE}"},
         "steps": steps,
+        "step_check": compare_steps(steps["new"], steps["existing"]),
         "fields": sorted(get_enabled_flags(whiteboard_tag)),
         "linked_project_excludes": {
             "value": get_linked_project_excludes(whiteboard_tag),

@@ -554,3 +554,58 @@ class TestDescribeTag:
         monkeypatch.setattr(config, "get_config", lambda: cfg)
         d = config.describe_tag("odd")
         assert json.loads(json.dumps(d))["maps"]["priority"]["value"] == {"1": None}
+
+
+class TestCompareSteps:
+    def test_a_field_synced_for_existing_bugs_only(self):
+        c = config.compare_steps(["create_issue"], ["update_issue_summary", "sync_whiteboard_labels"])
+        assert c["existing_only"] == ["whiteboard_labels"]
+        assert c["new_only"] == []
+
+    def test_a_field_synced_for_new_bugs_only(self):
+        c = config.compare_steps(["create_issue", "maybe_update_components"], ["update_issue_summary"])
+        assert c["new_only"] == ["components"]
+
+    def test_create_issue_covers_the_summary_and_type_for_a_new_bug(self):
+        c = config.compare_steps(["create_issue"], ["update_issue_summary", "maybe_update_issue_type"])
+        assert c["existing_only"] == []
+
+    def test_without_create_issue_the_summary_is_a_mismatch(self):
+        c = config.compare_steps(["add_link_to_jira"], ["update_issue_summary"])
+        assert c["existing_only"] == ["summary"]
+
+    def test_steps_that_sync_no_field_are_never_flagged(self):
+        c = config.compare_steps(["create_issue", "add_link_to_jira"],
+                                 ["update_issue_summary", "add_jira_comments_for_changes"])
+        assert c["existing_only"] == [] and c["new_only"] == []
+
+    def test_rows_say_which_kind_runs_each_step_and_what_it_syncs(self):
+        c = config.compare_steps(["create_issue", "sync_dependencies"], ["sync_dependencies"])
+        assert c["rows"] == [
+            {"step": "create_issue", "field": None, "new": True, "existing": False},
+            {"step": "sync_dependencies", "field": "dependencies", "new": True, "existing": True},
+        ]
+
+    def test_a_kind_left_to_jbis_defaults_is_unknown_and_never_flagged(self):
+        c = config.compare_steps(None, ["update_issue_summary", "sync_whiteboard_labels"])
+        assert c["existing_only"] == [] and c["new_only"] == []
+        assert {r["new"] for r in c["rows"]} == {None}
+
+    def test_describe_tag_records_the_comparison(self, monkeypatch):
+        cfg = [{"whiteboard_tag": "x", "parameters": {"steps": {
+            "new": ["create_issue"], "existing": ["update_issue_summary", "sync_keywords_labels"]}}}]
+        monkeypatch.setattr(config, "get_config", lambda: cfg)
+        assert config.describe_tag("x")["step_check"]["existing_only"] == ["keyword_labels"]
+
+    def test_duplicates_are_not_flagged_as_a_new_bug_cannot_have_them(self):
+        c = config.compare_steps(["create_issue"], ["update_issue_summary", "sync_duplicates"])
+        assert c["existing_only"] == []
+
+    def test_regressions_are_flagged_as_a_bug_can_be_filed_with_them(self):
+        c = config.compare_steps(["create_issue"], ["update_issue_summary", "sync_regressions"])
+        assert c["existing_only"] == ["regressions"]
+
+    def test_a_field_create_issue_sets_says_so_for_a_new_bug(self):
+        c = config.compare_steps(["create_issue"], ["update_issue_summary"])
+        assert c["rows"][1] == {"step": "update_issue_summary", "field": "summary", "new": False,
+                                "existing": True, "new_via": "create_issue"}
