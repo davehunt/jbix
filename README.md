@@ -200,7 +200,7 @@ uv run jbix-site                                    # current directory → outp
 jbix-site --data-dir ../jbi-drift --out _site       # another repository's data
 ```
 
-The package installs on its own (`pip install git+https://github.com/davehunt/jbix`), so a repository holding only data can build the site in CI. Each build replaces the output directory whole, so a tag that is gone leaves no stale page; it refuses to replace a directory it did not build.
+The package installs on its own (`pip install git+https://github.com/davehunt/jbix`), so a repository holding only data can build the site in CI. Its groups and components still come from here: copy this repository's `groups.yaml` and `tags.yaml` into the data directory before a run, from the same jbix commit, so they stay defined in one place. Each build replaces the output directory whole, so a tag that is gone leaves no stale page; it refuses to replace a directory it did not build.
 
 ## Testing
 

@@ -1,3 +1,10 @@
+# Bugzilla components per whiteboard tag. `--mode check` counts the bugs in a
+# tag's components, to show how many carry the tag. `Product::*` matches every
+# component in a product.
+#
+# Read from the data directory, which is this checkout unless --data-dir or
+# JBIX_DATA_DIR says otherwise. A deployment with its own data directory copies
+# this file there, so the components stay defined in one place.
 fp:
   components:
     - Core::Gecko Profiler
