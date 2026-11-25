@@ -1,6 +1,11 @@
-# Named tag groups — shortcuts for `--group NAME` in jbi.py and make_report.py.
-# Each group maps to a display name + the list of whiteboard tags it expands to.
-# (A bare list, `name: [tag, ...]`, is also accepted; the key is then the label.)
+# Named tag groups: shortcuts for `jbix.py --group NAME`, and a page each in the
+# drift site. Each group maps to a display name and the whiteboard tags it
+# expands to. A bare list, `name: [tag, ...]`, is also accepted; the key is then
+# the label.
+#
+# Read from the data directory, which is this checkout unless --data-dir or
+# JBIX_DATA_DIR says otherwise. A deployment with its own data directory copies
+# this file there, so the groups stay defined in one place.
 perf:
   name: Performance
   tags: [fp, fxp, fxpe, pcf]
