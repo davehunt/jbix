@@ -337,3 +337,18 @@ def test_an_orphan_of_a_restricted_bug_is_not_a_broken_link(world, monkeypatch):
     run(monkeypatch, "--tags", "fxp", "--mode", "check", "--no-site", "--refresh")
     assert world.remote_link_lookups == []  # remembered, not looked up again
     assert [b["jira_key"] for b in latest(world, "fxp")["broken_links"]] == ["FXP-9"]
+
+
+def test_the_latest_file_says_how_the_tag_was_compared(world, monkeypatch):
+    """The run's own overrides show beside JBI's config, as --no-assignee does daily."""
+    world_config = [{**CONFIG[0], "parameters": {**CONFIG[0]["parameters"], "steps": {"existing": [
+        "update_issue_summary", "maybe_assign_jira_user", "maybe_update_issue_priority", "sync_see_also"]}}},
+        CONFIG[1]]
+    monkeypatch.setattr(config, "get_config", lambda: world_config)
+    run(monkeypatch, "--tags", "fxp", "--mode", "check", "--no-site", "--no-assignee")
+
+    jbi = latest(world, "fxp")["jbi"]
+    assert jbi["fields"] == ["assignee", "priority", "see_also", "summary"]
+    assert jbi["compared"] == ["priority", "see_also", "summary"]
+    assert jbi["maps"]["priority"]["default"] is True
+    assert "jbi" not in history(world, "fxp")[0]

@@ -86,7 +86,8 @@ class TestGetConfig:
         monkeypatch.setattr(config, "CACHE_PATH", p)
 
         new_config = [{"whiteboard_tag": "new-tag", "parameters": {}}]
-        with patch.object(config, "_fetch_raw", return_value=yaml.dump(new_config)):
+        with patch.object(config, "_fetch_commit", return_value=None), \
+                patch.object(config, "_fetch_raw", return_value=yaml.dump(new_config)):
             result = config.get_config()
         assert result[0]["whiteboard_tag"] == "new-tag"
         assert p.read_text()  # cache was written
@@ -95,7 +96,8 @@ class TestGetConfig:
         p = tmp_path / "missing.yaml"
         monkeypatch.setattr(config, "CACHE_PATH", p)
 
-        with patch.object(config, "_fetch_raw", return_value=SAMPLE_YAML):
+        with patch.object(config, "_fetch_commit", return_value=None), \
+                patch.object(config, "_fetch_raw", return_value=SAMPLE_YAML):
             result = config.get_config()
         assert result[0]["whiteboard_tag"] == "fxp"
         assert p.exists()  # cache was created
@@ -379,3 +381,176 @@ class TestFetchRaw:
         with patch("urllib.request.urlopen", return_value=mock_response):
             result = config._fetch_raw()
         assert result == "yaml content"
+
+    def test_fetch_raw_at_a_commit_reads_that_commit(self):
+        with patch("urllib.request.urlopen", return_value=_response(b"x")) as urlopen:
+            config._fetch_raw(SHA)
+        assert urlopen.call_args.args[0] == (
+            f"https://raw.githubusercontent.com/mozilla/jira-bugzilla-integration/{SHA}"
+            "/config/config.prod.yaml")
+
+
+# ---------------------------------------------------------------------------
+# The commit the config is read at
+# ---------------------------------------------------------------------------
+
+SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _response(body: bytes):
+    resp = MagicMock()
+    resp.read.return_value = body
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
+
+
+class TestFetchCommit:
+    def test_returns_mains_sha(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        with patch("urllib.request.urlopen", return_value=_response(SHA.encode() + b"\n")) as urlopen:
+            assert config._fetch_commit() == SHA
+        req = urlopen.call_args.args[0]
+        assert req.get_header("Accept") == "application/vnd.github.sha"
+        assert req.get_header("Authorization") is None
+
+    def test_sends_a_github_token_when_set(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_TOKEN", "tok")
+        with patch("urllib.request.urlopen", return_value=_response(SHA.encode())) as urlopen:
+            config._fetch_commit()
+        assert urlopen.call_args.args[0].get_header("Authorization") == "Bearer tok"
+
+    def test_a_failed_lookup_gives_none(self):
+        with patch("urllib.request.urlopen", side_effect=OSError("rate limited")):
+            assert config._fetch_commit() is None
+
+    def test_anything_but_a_sha_gives_none(self):
+        with patch("urllib.request.urlopen", return_value=_response(b'{"message": "Not Found"}')):
+            assert config._fetch_commit() is None
+
+
+class TestConfigAtACommit:
+    def test_a_fetch_reads_at_mains_commit_and_remembers_it(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "CACHE_PATH", tmp_path / "jbi_config.yaml")
+        with patch.object(config, "_fetch_commit", return_value=SHA), \
+                patch.object(config, "_fetch_raw", return_value=SAMPLE_YAML) as fetch:
+            config.get_config()
+        fetch.assert_called_once_with(SHA)
+        assert (tmp_path / "jbi_config.commit").read_text() == SHA
+        assert config._loaded == {"raw": SAMPLE_YAML, "commit": SHA}
+
+    def test_a_fresh_cache_gives_the_commit_it_was_read_at(self, tmp_path, monkeypatch):
+        p = tmp_path / "jbi_config.yaml"
+        p.write_text(SAMPLE_YAML)
+        (tmp_path / "jbi_config.commit").write_text(SHA)
+        monkeypatch.setattr(config, "CACHE_PATH", p)
+        config.get_config()
+        assert config._loaded["commit"] == SHA
+
+    def test_a_cache_from_before_commits_were_kept_has_none(self, tmp_path, monkeypatch):
+        p = tmp_path / "jbi_config.yaml"
+        p.write_text(SAMPLE_YAML)
+        monkeypatch.setattr(config, "CACHE_PATH", p)
+        config.get_config()
+        assert config._loaded["commit"] is None
+
+    def test_reading_main_clears_an_older_commit(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(config, "CACHE_PATH", tmp_path / "jbi_config.yaml")
+        (tmp_path / "jbi_config.commit").write_text(SHA)
+        with patch.object(config, "_fetch_commit", return_value=None), \
+                patch.object(config, "_fetch_raw", return_value=SAMPLE_YAML):
+            config.get_config()
+        assert config._cached_commit() is None
+
+
+# ---------------------------------------------------------------------------
+# describe_tag: the config as the drift report shows it
+# ---------------------------------------------------------------------------
+
+RAW = """\
+---
+# Action Config
+- whiteboard_tag: addons
+  parameters:
+    jira_project_key: WEBEXT
+
+- whiteboard_tag: fxp
+  description: Performance Team
+  parameters:
+    jira_project_key: FXP
+    linked_project_excludes: []
+    priority_map:
+      P1: Highest
+    steps:
+      existing:
+        - update_issue_summary
+        - maybe_update_issue_priority
+
+# A comment above the next entry belongs to it.
+- whiteboard_tag: "quoted"
+  parameters:
+    jira_project_key: Q
+"""
+
+
+class TestTagLines:
+    def test_an_entry_runs_to_the_last_line_before_the_next(self):
+        assert config._tag_lines(RAW, "addons") == (3, 5)
+
+    def test_trailing_blank_lines_and_comments_are_left_out(self):
+        assert config._tag_lines(RAW, "fxp") == (7, 17)
+
+    def test_the_last_entry_runs_to_the_end(self):
+        assert config._tag_lines(RAW, "quoted") == (20, 22)
+
+    def test_an_unknown_tag_has_none(self):
+        assert config._tag_lines(RAW, "fx") is None
+
+
+class TestDescribeTag:
+    @pytest.fixture
+    def loaded(self, monkeypatch):
+        monkeypatch.setattr(config, "get_config", lambda: yaml.safe_load(RAW))
+        config._loaded.update(raw=RAW, commit=SHA)
+
+    def test_links_to_the_tags_lines_at_the_commit_read(self, loaded):
+        source = config.describe_tag("fxp")["source"]
+        assert source == {
+            "commit": SHA, "lines": [7, 17],
+            "url": f"https://github.com/mozilla/jira-bugzilla-integration/blob/{SHA}"
+                   "/config/config.prod.yaml#L7-L17",
+            "defaults_url": f"https://github.com/mozilla/jira-bugzilla-integration/blob/{SHA}/jbi/models.py",
+        }
+
+    def test_without_a_commit_links_to_main_without_lines(self, loaded):
+        config._loaded["commit"] = None
+        source = config.describe_tag("fxp")["source"]
+        assert source["url"] == ("https://github.com/mozilla/jira-bugzilla-integration/blob/main"
+                                 "/config/config.prod.yaml")
+        assert source["lines"] is None
+
+    def test_says_what_the_tag_sets_and_what_is_jbis_default(self, loaded):
+        d = config.describe_tag("fxp")
+        assert d["description"] == "Performance Team"
+        assert d["fields"] == ["priority", "summary"]
+        assert d["steps"] == {"existing": ["update_issue_summary", "maybe_update_issue_priority"],
+                              "new": None}
+        assert d["source"]["defaults_url"] == (
+            f"https://github.com/mozilla/jira-bugzilla-integration/blob/{SHA}/jbi/models.py")
+        assert d["linked_project_excludes"] == {"value": [], "default": False}
+        assert d["maps"]["priority"] == {"value": {"P1": "Highest"}, "default": False}
+        assert d["maps"]["severity"]["default"] is True
+        assert d["labels_brackets"] == {"value": "no", "default": True}
+
+    def test_a_tag_with_no_steps_follows_jbis_defaults(self, loaded):
+        d = config.describe_tag("addons")
+        assert d["steps"] == {"existing": None, "new": None}
+        assert d["fields"] == ["summary", "whiteboard_labels"]
+        assert d["linked_project_excludes"] == {"value": ["BZFFX"], "default": True}
+
+    def test_is_json_serialisable_with_string_keys(self, loaded, monkeypatch):
+        import json
+        cfg = [{"whiteboard_tag": "odd", "parameters": {"priority_map": {1: None}}}]
+        monkeypatch.setattr(config, "get_config", lambda: cfg)
+        d = config.describe_tag("odd")
+        assert json.loads(json.dumps(d))["maps"]["priority"]["value"] == {"1": None}

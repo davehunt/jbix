@@ -60,6 +60,18 @@ def test_history_line_holds_counts_only():
     }
 
 
+def test_how_the_tag_was_compared_is_kept_in_latest_only():
+    jbi = {"fields": ["priority"], "compared": ["priority"], "source": {"commit": "abc"}}
+    record_snapshot("fp", "FP", _HEALTH, _diff(), _TS, jbi=jbi)
+    assert _latest()["jbi"] == jbi
+    assert "jbi" not in _history()[0]
+
+
+def test_a_run_without_config_detail_records_none():
+    record_snapshot("fp", "FP", _HEALTH, _diff(), _TS)
+    assert "jbi" not in _latest()
+
+
 def test_history_appends_and_latest_is_replaced():
     record_snapshot("fp", "FP", _HEALTH, _diff(n_rows=2), _TS)
     record_snapshot("fp", "FP", _HEALTH, _diff(n_rows=1), datetime(2026, 6, 25, 9, 0, 0))

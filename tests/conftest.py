@@ -31,6 +31,16 @@ def make_jira(mode: str = "apply") -> JiraClient:
     return client
 
 
+@pytest.fixture(autouse=True)
+def _forget_loaded_jbi_config():
+    """jbix.config remembers the last config it read, for describe_tag's line numbers
+    and permalink. A test that patches get_config would otherwise see another test's."""
+    import jbix.config as config
+    config._loaded.update(raw=None, commit=None)
+    yield
+    config._loaded.update(raw=None, commit=None)
+
+
 @pytest.fixture
 def bugz() -> BugzillaClient:
     return make_bugz()
