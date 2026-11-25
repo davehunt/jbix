@@ -328,6 +328,18 @@ details.history { margin: 0.25rem 0 0; }
 details.history summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
 details.history table { margin-top: 0.5rem; }
 
+/* How this was compared: each value map on a line, and values as wrapping chips. */
+dl.mappings { display: grid; grid-template-columns: max-content 1fr; gap: 0.45rem 1rem; margin: 0.6rem 0 0.4rem; }
+dl.mappings dt { font-weight: 600; }
+dl.mappings dd { margin: 0; }
+ul.translations { margin: 0; padding: 0; list-style: none; }
+ul.translations > li { margin: 0 0 0.25rem; }
+p.steps-default { margin: 0.4rem 0 0; font-size: 0.9rem; }
+ul.codes { display: inline; margin: 0; padding: 0; list-style: none; }
+ul.codes li { display: inline-block; margin: 0 0.5rem 0.25rem 0; }
+details.history > ul.codes { display: block; margin: 0.5rem 0 0.25rem; }
+@media (max-width: 640px) { dl.mappings { grid-template-columns: 1fr; } dl.mappings dd { margin-bottom: 0.4rem; } }
+
 .queries { padding-left: 1.2rem; }
 
 @media (max-width: 640px) {

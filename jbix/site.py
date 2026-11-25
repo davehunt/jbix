@@ -71,6 +71,24 @@ FIXES = {
     "unlinked": "Check that the bug's see-also link names this issue by its current key.",
 }
 
+# The fields a run can compare, by jbix's flag names (jbix.config.STEP_TO_FLAG),
+# in the order the config section lists them. The last two are jbix's own.
+CONFIG_FIELDS = {
+    "summary": "Summary", "assignee": "Assignee", "components": "Components",
+    "whiteboard_labels": "Whiteboard labels", "keyword_labels": "Keyword labels",
+    "priority": "Priority", "severity": "Severity", "status": "Status", "resolution": "Resolution",
+    "type": "Issue type", "dependencies": "Dependencies", "see_also": "See also",
+    "duplicates": "Duplicates", "regressions": "Regressions",
+    "time_tracking": "Time tracking", "remote_links": "Remote links",
+}
+EXTENSION_FIELDS = frozenset({"time_tracking", "remote_links"})
+LINK_FIELDS = frozenset({"dependencies", "see_also", "duplicates", "regressions"})
+# The value maps the config section shows, for the fields that use them.
+MAP_FIELDS = {"priority": "Priority", "severity": "Severity", "status": "Status",
+              "resolution": "Resolution", "type": "Issue type"}
+# JBI's labels_brackets, as a sentence ends.
+BRACKETS = {"no": "without brackets", "yes": "with brackets", "both": "both with and without brackets"}
+
 # Drawn, like the theme icons, so it is the same size everywhere.
 CHEVRON = ('<svg class="chevron" viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">'
            '<path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.6" '
@@ -533,17 +551,19 @@ def drift_rows_table(diff: dict, csv_href: str | None = None) -> str:
             f'</tr></thead><tbody>{body}</tbody></table></div>{note}')
 
 
-def fixing_section(tag: str, fields: list[dict]) -> str:
+def fixing_section(tag: str, fields: list[dict], config_url: str | None = None) -> str:
     """How to put this tag's drift right with jbix, preview first.
 
     Only the preview command is shown, so nothing copied from the page changes
     anything; prompt and apply are named as the next steps. The command follows
     the field menu above it, syncing only that field when one is chosen.
+    ``config_url``, the tag's entry in JBI's config, is linked if known, else JBI.
     """
     base = f"python jbix.py --tags {tag} --mode preview"
     flags = {f["name"]: FIX_FLAGS[f["name"]] for f in fields if f.get("n") and f["name"] in FIX_FLAGS}
     by_field = {name: f"python jbix.py --tags {tag} --manual {flag} --mode preview"
                 for name, flag in flags.items()}
+    config_link = new_tab(config_url or JBI_URL, "JBI's configuration")
     return (
         '<h2 id="fixing">Fixing this drift</h2>'
         f'<p><a href="{REPO_URL}">JBIX</a> can sync these pairs from Bugzilla to Jira. Once it is '
@@ -564,12 +584,138 @@ def fixing_section(tag: str, fields: list[dict]) -> str:
         '<li><strong>Changes are made as you,</strong> through your Jira token. Status changes and '
         'new links notify the issue\'s watchers; other fields are updated quietly.</li>'
         '<li><strong>Drift that keeps coming back</strong> may need a change to '
-        f'<a href="{JBI_URL}">JBI\'s configuration</a> rather than another sync.</li>'
+        f'{config_link} rather than another sync.</li>'
         '</ul></aside>'
         '<p>This report shows your changes after its next run is deployed. To check them sooner, '
         f'run <code>python jbix.py --tags {e(tag)} --mode check</code>, which rebuilds the report '
         'locally in <code>output/site/</code>.</p>'
     )
+
+
+def _fields_text(names: list[str]) -> str:
+    return ", ".join(CONFIG_FIELDS.get(n, n) for n in names)
+
+
+def _whose(entry: dict) -> str:
+    return "JBI's default" if entry.get("default") else "set for this tag"
+
+
+def _codes(values) -> str:
+    """Values as a run of code chips, which wrap rather than take a line each."""
+    return "".join(f"<li><code>{e(str(v))}</code></li>" for v in values)
+
+
+def new_tab(url: str | None, text: str) -> str:
+    """A link that opens in a new tab: for pages off the report, such as JBI's code."""
+    u = safe_url(url)
+    return f'<a href="{e(u)}" target="_blank" rel="noopener">{e(text)}</a>' if u else e(text)
+
+
+def _map_row(label: str, entry: dict) -> str:
+    """One value map: the values kept as they are on one line, then each translation on its own."""
+    value = entry.get("value") or {}
+    whose = f' <span class="muted">({_whose(entry)})</span>'
+    if not value:
+        return f'<dt>{e(label)}{whose}</dt><dd class="muted">None: no value is mapped.</dd>'
+    same = [k for k, v in value.items() if str(k) == str(v)]
+    changed = [(k, v) for k, v in value.items() if str(k) != str(v)]
+
+    def code(v) -> str:
+        # An empty value (Bugzilla's unset priority) would be a blank chip; name it.
+        return f"<code>{e(str(v))}</code>" if str(v) else '<span class="muted">(empty)</span>'
+
+    items = ([f'<li><span class="muted">Unchanged:</span> <ul class="codes">{_codes(same)}</ul></li>']
+             if same else [])
+    items += [f"<li>{code(k)} → {code(v)}</li>" for k, v in changed]
+    return f'<dt>{e(label)}{whose}</dt><dd><ul class="translations">{"".join(items)}</ul></dd>'
+
+
+def _steps(kind: str, steps: list | None, defaults_url: str | None) -> str:
+    """The tag's steps for one kind of bug, folded; or, if it sets none, a link to JBI's defaults."""
+    if steps is None:
+        defaults = new_tab(defaults_url, "JBI's defaults")
+        return (f'<p class="steps-default muted">JBI\'s steps for {kind}: not set for this tag, so '
+                f'{defaults} apply.</p>')
+    if not steps:
+        return f'<p class="steps-default muted">JBI\'s steps for {kind}: none.</p>'
+    return (f'<details class="history"><summary>JBI\'s steps for {kind}</summary>'
+            f'<ul class="codes">{_codes(steps)}</ul></details>')
+
+
+def config_section(jbi: dict) -> str:
+    """How the latest run compared this tag: JBI's config for it, and any override.
+
+    Answers the questions a reader of the drift brings: which fields are compared
+    and why not others, how a value is translated, and whether the run did what
+    JBI's config says. Links to the tag's lines at the commit the run read, so the
+    link still shows what was used after JBI's config changes.
+    """
+    source = jbi.get("source") or {}
+    url = safe_url(source.get("url"))
+    commit, lines = source.get("commit"), source.get("lines")
+    where = new_tab(url, "JBI's configuration")
+    if commit:
+        at = f" at commit <code>{e(commit[:12])}</code>"
+        if lines:
+            at += f", lines {num(lines[0])} to {num(lines[1])}"
+    else:
+        at = ", read from its main branch"
+    desc = jbi.get("description")
+    intro = (f'<p>Which fields are compared, and how values are translated for Jira, come from '
+             f'this tag\'s entry in {where}{at}.'
+             + (f' JBI describes it as “{e(desc)}”.' if desc else "") + '</p>')
+
+    jbi_fields, compared = set(jbi.get("fields") or []), set(jbi.get("compared") or [])
+    names = [n for n in CONFIG_FIELDS if n in jbi_fields | compared] + sorted(
+        (jbi_fields | compared) - set(CONFIG_FIELDS))
+    unsynced = [n for n in CONFIG_FIELDS
+                if n not in jbi_fields | compared and n not in EXTENSION_FIELDS]
+    notes = []
+    if shown_fields := [n for n in names if n in compared]:
+        notes.append(f'<li><strong>Compared:</strong> {e(_fields_text(shown_fields))}.</li>')
+    if left_out := [n for n in names if n in jbi_fields and n not in compared]:
+        one = len(left_out) == 1
+        notes.append(f'<li><strong>Left out of this run:</strong> {e(_fields_text(left_out))}. JBI syncs '
+                     f'{"it" if one else "them"}, but the run that made this report was told not to '
+                     f'compare {"it" if one else "them"}, so {"its" if one else "their"} drift is not '
+                     'counted.</li>')
+    if added := [n for n in names if n in compared and n not in jbi_fields]:
+        notes.append(f'<li><strong>Compared, though JBI does not sync them:</strong> '
+                     f'{e(_fields_text(added))}.</li>')
+    if unsynced:
+        notes.append(f'<li><strong>Not compared, as JBI does not sync them:</strong> '
+                     f'{e(_fields_text(unsynced))}.</li>')
+    brackets = jbi.get("labels_brackets") or {}
+    if "whiteboard_labels" in compared and brackets.get("value"):
+        notes.append(f'<li>Whiteboard labels are written {BRACKETS.get(brackets["value"], e(str(brackets["value"])))}'
+                     f'{" (JBI&#39;s default)" if brackets.get("default") else ""}.</li>')
+    excludes = jbi.get("linked_project_excludes") or {}
+    if compared & LINK_FIELDS and excludes.get("value"):
+        notes.append(f'<li>Links to issues in {e(", ".join(excludes["value"]))} are never made'
+                     f'{" (JBI&#39;s default)" if excludes.get("default") else ""}, so they are not expected.</li>')
+    callout = ('<aside class="callout info" aria-labelledby="what-was-compared">'
+               f'<p class="callout-title" id="what-was-compared">{INFO_ICON}What was compared</p>'
+               f'<ul class="fixes">{"".join(notes)}</ul></aside>')
+
+    maps = jbi.get("maps") or {}
+
+    def map_row(f: str) -> str:
+        # Every mapped field gets a row, so one missing from the list is never a puzzle:
+        # a map that is not used says why, rather than leaving the field out.
+        label = MAP_FIELDS[f]
+        if f in compared and f in maps:
+            return _map_row(label, maps[f])
+        why = ("JBI syncs it, but this run left it out" if f in jbi_fields
+               else f"not synced for this tag, so JBI leaves Jira's {label.lower()} as it is")
+        return f'<dt>{e(label)}</dt><dd class="muted">Not compared: {why}.</dd>'
+
+    maps_html = ('<details class="history"><summary>How values are translated</summary>'
+                 '<dl class="mappings">' + "".join(map_row(f) for f in MAP_FIELDS)
+                 + '</dl></details>' if maps else "")
+    steps = jbi.get("steps") or {}
+    steps_html = "".join(_steps(f"{kind} bug", steps.get(key), source.get("defaults_url"))
+                         for key, kind in (("existing", "an existing"), ("new", "a new")))
+    return '<h2 id="config">How this was compared</h2>' + intro + callout + maps_html + steps_html
 
 
 def broken_table(rows: list[dict], total: int, prefix: str | None = None,
@@ -966,10 +1112,14 @@ Built by <a href="{REPO_URL}">JBIX</a>.</footer>
             queries.append(link(bz["untagged_url"], f"Bugs in its components without [{t.name}]"))
         more = ('<h2 id="queries">Live queries</h2><ul class="queries">'
                 + "".join(f"<li>{q}</li>" for q in queries) + "</ul>") if queries else ""
+        # Latest files from before the config was recorded have none; say nothing then.
+        jbi = latest.get("jbi")
+        config_url = safe_url((jbi or {}).get("source", {}).get("url"))
+        how = ' <a href="#config">How this was compared</a>' if jbi else ""
         return (
             f'<h1><span class="tag-name">[{e(t.name)}]</span> <span class="muted">→ {e(t.project)}</span></h1>'
             f'<p class="lede">Bugs tagged <code>[{e(t.name)}]</code>, compared with their issues in '
-            f'{e(t.project)}.</p>'
+            f'{e(t.project)}.{how}</p>'
             + stale + tiles(cards)
             + line_chart(t.history, "Drifted pairs")
             + line_chart(t.history, "Broken links", "broken")
@@ -978,10 +1128,11 @@ Built by <a href="{REPO_URL}">JBIX</a>.</footer>
             + field_bars(diff.get("fields") or [], now.pairs)
             + '<h2 id="drift">Drifted pairs</h2>'
             + drift_rows_table(diff, f"{slug(t.name)}-changes.csv" if t.changes_csv else None)
-            + (fixing_section(t.name, diff.get("fields") or []) if now.drifted else "")
+            + (fixing_section(t.name, diff.get("fields") or [], config_url) if now.drifted else "")
             + '<h2 id="broken">Broken links</h2>'
             + broken_table(latest.get("broken_links") or [],
                            latest.get("broken_links_total", len(latest.get("broken_links") or [])))
+            + (config_section(jbi) if jbi else "")
             + more)
 
     def build(self, out: pathlib.Path) -> None:

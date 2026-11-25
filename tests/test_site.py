@@ -508,3 +508,127 @@ def test_no_broken_links_anywhere_is_all_clear(data_dir, tmp_path):
     for page in ("groups/perf.html", "tags/fp.html"):
         doc = (out / page).read_text()
         assert '<p class="all-clear good">' in doc[doc.index('<h2 id="broken">'):]
+
+
+# -- how this was compared ----------------------------------------------------
+
+SHA = "0123456789abcdef0123456789abcdef01234567"
+DEFAULTS_URL = f"https://github.com/mozilla/jira-bugzilla-integration/blob/{SHA}/jbi/models.py"
+CONFIG_URL = f"https://github.com/mozilla/jira-bugzilla-integration/blob/{SHA}/config/config.prod.yaml#L7-L16"
+
+
+def _jbi(**kw):
+    jbi = {
+        "description": "Performance Team",
+        "source": {"commit": SHA, "url": CONFIG_URL, "lines": [7, 16], "defaults_url": DEFAULTS_URL},
+        "steps": {"existing": ["update_issue_summary", "maybe_assign_jira_user",
+                               "maybe_update_issue_priority", "sync_see_also"], "new": None},
+        "fields": ["assignee", "priority", "see_also", "summary"],
+        "compared": ["priority", "see_also", "summary"],
+        "linked_project_excludes": {"value": ["BZFFX"], "default": True},
+        "maps": {"priority": {"value": {"P1": "P1", "--": "(none)", "": "None"}, "default": False},
+                 "severity": {"value": {"S1": "S1"}, "default": True},
+                 "status": {"value": {}, "default": True},
+                 "resolution": {"value": {}, "default": True},
+                 "type": {"value": {"defect": "Bug"}, "default": True}},
+        "labels_brackets": {"value": "no", "default": True},
+    }
+    return {**jbi, **kw}
+
+
+def _config_section(data_dir, tmp_path, jbi):
+    snapshots.record_snapshot("fp", "FP", _health(), _diff(), datetime(2026, 11, 1), jbi=jbi)
+    doc = (_build(data_dir, tmp_path) / "tags" / "fp.html").read_text()
+    return doc, doc[doc.index('<h2 id="config">'):doc.index('<h2 id="queries">')]
+
+
+def test_the_config_section_links_to_the_tags_lines_at_the_commit(data_dir, tmp_path):
+    doc, section = _config_section(data_dir, tmp_path, _jbi())
+    assert f'<a href="{CONFIG_URL}" target="_blank" rel="noopener">JBI&#x27;s configuration</a> at commit <code>{SHA[:12]}</code>, lines 7 to 16' in section
+    assert "“Performance Team”" in section
+    assert '<a href="#config">How this was compared</a>' in doc
+    # The fixing section's advice about recurring drift points at the same lines.
+    fixing = doc[doc.index('<h2 id="fixing">'):doc.index('<h2 id="broken">')]
+    assert (f'<a href="{CONFIG_URL}" target="_blank" rel="noopener">JBI&#x27;s configuration</a> '
+            'rather than another sync') in fixing
+
+
+def test_a_field_jbi_syncs_but_the_run_left_out_is_called_out(data_dir, tmp_path):
+    _, section = _config_section(data_dir, tmp_path, _jbi())
+    assert '<aside class="callout info" aria-labelledby="what-was-compared">' in section
+    assert "<strong>Compared:</strong> Summary, Priority, See also." in section
+    assert ("<strong>Left out of this run:</strong> Assignee. JBI syncs it, but the run that made "
+            "this report was told not to compare it, so its drift is not counted.") in section
+    _, section = _config_section(data_dir, tmp_path, _jbi(compared=["see_also", "summary"]))
+    assert "Assignee, Priority. JBI syncs them" in section and "so their drift" in section
+
+
+def test_fields_jbi_does_not_sync_are_listed_but_jbixs_own_are_not(data_dir, tmp_path):
+    _, section = _config_section(data_dir, tmp_path, _jbi())
+    unsynced = section[section.index("Not compared, as JBI does not sync them"):]
+    unsynced = unsynced[:unsynced.index("</li>")]
+    assert "Severity" in unsynced and "Components" in unsynced
+    assert "Time tracking" not in unsynced and "Priority" not in unsynced
+
+
+def test_the_maps_of_compared_fields_are_listed(data_dir, tmp_path):
+    _, section = _config_section(data_dir, tmp_path, _jbi())
+    maps = section[section.index('<dl class="mappings">'):section.index("</dl>")]
+    assert '<dt>Priority <span class="muted">(set for this tag)</span></dt>' in maps
+    # Values kept as they are share a line; each translation has its own.
+    assert ('<ul class="translations"><li><span class="muted">Unchanged:</span> <ul class="codes">'
+            '<li><code>P1</code></li></ul></li><li><code>--</code> → <code>(none)</code></li>') in maps
+    assert '<li><span class="muted">(empty)</span> → <code>None</code></li>' in maps
+    assert "<code>S1</code>" not in maps  # severity is not compared, so its map is not listed
+
+
+def test_a_mapped_field_that_is_not_compared_says_why(data_dir, tmp_path):
+    _, section = _config_section(data_dir, tmp_path, _jbi())
+    maps = section[section.index('<dl class="mappings">'):section.index("</dl>")]
+    assert ('<dt>Resolution</dt><dd class="muted">Not compared: not synced for this tag, so JBI '
+            "leaves Jira's resolution as it is.</dd>") in maps
+    _, section = _config_section(data_dir, tmp_path, _jbi(fields=["severity", "priority"],
+                                                          compared=["priority"]))
+    assert "<dt>Severity</dt><dd class=\"muted\">Not compared: JBI syncs it, but this run left it out.</dd>" in section
+
+
+def test_link_excludes_are_noted_when_links_are_compared(data_dir, tmp_path):
+    _, section = _config_section(data_dir, tmp_path, _jbi())
+    assert "Links to issues in BZFFX are never made (JBI&#39;s default)" in section
+    _, section = _config_section(data_dir, tmp_path, _jbi(compared=["priority"]))
+    assert "BZFFX" not in section
+
+
+def test_steps_the_tag_sets_are_folded(data_dir, tmp_path):
+    _, section = _config_section(data_dir, tmp_path, _jbi())
+    assert "<summary>JBI's steps for an existing bug</summary>" in section
+    assert "<li><code>maybe_assign_jira_user</code></li>" in section
+
+
+def test_steps_the_tag_does_not_set_link_to_jbis_defaults_rather_than_copy_them(data_dir, tmp_path):
+    _, section = _config_section(data_dir, tmp_path, _jbi())
+    assert ("JBI's steps for a new bug: not set for this tag, so "
+            f'<a href="{DEFAULTS_URL}" target="_blank" rel="noopener">JBI&#x27;s defaults</a> apply.') in section
+    assert "steps for a new bug</summary>" not in section
+
+
+def test_without_a_commit_the_config_is_said_to_be_from_main(data_dir, tmp_path):
+    url = "https://github.com/mozilla/jira-bugzilla-integration/blob/main/config/config.prod.yaml"
+    _, section = _config_section(data_dir, tmp_path, _jbi(source={"commit": None, "url": url, "lines": None}))
+    assert f'<a href="{url}" target="_blank" rel="noopener">JBI&#x27;s configuration</a>, read from its main branch.' in section
+
+
+def test_config_values_are_escaped(data_dir, tmp_path):
+    jbi = _jbi(description="<script>x</script>",
+               maps={"priority": {"value": {"<b>": "&"}, "default": False}})
+    _, section = _config_section(data_dir, tmp_path, jbi)
+    assert "<script>" not in section and "&lt;script&gt;" in section
+    assert "<code>&lt;b&gt;</code> → <code>&amp;</code>" in section
+
+
+def test_a_latest_file_without_config_detail_has_no_section(data_dir, tmp_path):
+    _record("fp", date(2026, 11, 1))
+    doc = (_build(data_dir, tmp_path) / "tags" / "fp.html").read_text()
+    assert 'id="config"' not in doc and 'href="#config"' not in doc
+    fixing = doc[doc.index('<h2 id="fixing">'):doc.index('<h2 id="broken">')]
+    assert f'<a href="{site.JBI_URL}" target="_blank" rel="noopener">JBI&#x27;s configuration</a>' in fixing

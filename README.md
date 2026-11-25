@@ -180,7 +180,7 @@ Fuzzy link candidate matching (`--link-candidates`) writes `output/link_candidat
 Every forward run records two things per tag in the data directory, then (unless `--no-site`) rebuilds the drift site in `output/site/`:
 
 - `snapshots/<tag>.jsonl` — the history: one compact line of counts per run, a few hundred bytes, so a year of daily runs stays small enough to keep in git
-- `latest/<tag>.json` — the latest run's detail, overwritten each run: the drifted fields with their current and expected values, the broken links, and links to live Bugzilla and Jira queries
+- `latest/<tag>.json` — the latest run's detail, overwritten each run: the drifted fields with their current and expected values, the broken links, links to live Bugzilla and Jira queries, and how the tag was compared (below)
 - `latest/<tag>.csv` — every change the latest run found, uncapped: the tag page lists the first 500 and links to this as `tags/<tag>-changes.csv`, with a column saying what syncing from Bugzilla would change (`+ todo`, `P3 → P1`)
 
 The site is plain static HTML with relative links, so it works from disk or any web server:
@@ -189,7 +189,9 @@ The site is plain static HTML with relative links, so it works from disk or any 
 |---|---|
 | `index.html` | totals, drift over time, every group, and every tag ranked by drift |
 | `groups/<group>.html` | the same for one group in `groups.yaml` |
-| `tags/<tag>.html` | one tag: its trend, which fields drift, each bug and issue out of sync, its broken links |
+| `tags/<tag>.html` | one tag: its trend, which fields drift, each bug and issue out of sync, its broken links, and how it was compared |
+
+Each tag page ends with **How this was compared**: a link to the tag's lines in JBI's `config.prod.yaml` at the commit the run read, which fields JBI syncs beside which the run compared (so an override such as `--no-assignee` is visible), and the value maps and steps in effect, with JBI's defaults marked. jbix reads the config at main's current commit, found through GitHub's API; set `GITHUB_TOKEN` in CI to avoid its unauthenticated rate limit. If the lookup fails, the config is read from main and the page links to the file without line numbers.
 
 Charts are inline SVG, and it has a light and a dark theme, following the system unless the reader picks one. Build it on its own, from any data directory:
 
