@@ -1,6 +1,9 @@
 # Secrets / local config
 .env
 assignee_map.yaml
+# A deployment's own, in its data directory: copy the *.example.yaml files
+groups.yaml
+tags.yaml
 
 # Local-only dev notes (agent/AI instructions; kept out of the public repo)
 CLAUDE.md

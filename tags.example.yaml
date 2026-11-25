@@ -1,3 +1,8 @@
+# Example per-tag Bugzilla components. Copy to `tags.yaml` in your data directory
+# (gitignored here, as a deployment keeps its own) and edit to suit.
+#
+# Keyed by whiteboard tag. `--mode check` counts the bugs in these components, to
+# show how many carry the tag. `Product::*` matches every component in a product.
 fp:
   components:
     - Core::Gecko Profiler

@@ -73,7 +73,11 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
 uv sync
 cp .env.example .env                          # then fill in API credentials
 cp assignee_map.example.yaml assignee_map.yaml  # optional: Bugzilla→Jira assignee overrides
+cp groups.example.yaml groups.yaml              # optional: named tag groups
+cp tags.example.yaml tags.yaml                  # optional: components per tag, for --mode check
 ```
+
+`groups.yaml` and `tags.yaml` belong to the [data directory](#drift-site), so a deployment keeps its own beside its history rather than using jbix's. Both are gitignored here, and the examples are a starting point. Without them, `--group` has no groups to expand, the site has no group pages, and `--mode check` skips the component counts.
 
 The Bugzilla/Jira/people-directory hostnames default to Mozilla's instances; override them via the
 env vars below for other deployments.
@@ -116,7 +120,7 @@ Optional Bugzilla-email → Jira-email overrides consulted first by `sync_assign
 
 ### `tags.yaml`
 
-Defines Bugzilla component lists used by the `--mode check` component counts, keyed by whiteboard tag:
+Copied from `tags.example.yaml`. Defines Bugzilla component lists used by the `--mode check` component counts, keyed by whiteboard tag:
 
 ```yaml
 fxp:
@@ -131,7 +135,7 @@ fxp:
 
 ### `groups.yaml`
 
-Named shortcuts for sets of tags, used by `jbix.py --group` and rendered as group views in the report:
+Copied from `groups.example.yaml`. Named shortcuts for sets of tags, used by `jbix.py --group` and rendered as group views in the report:
 
 ```yaml
 perf:
@@ -218,8 +222,8 @@ Issues and pull requests are welcome. Before opening a PR, please run `uv run ru
 
 ```
 jbix.py               # CLI: tag-driven sync, reverse sync, health check
-tags.yaml            # Component lists per whiteboard tag (for health check); data directory
-groups.yaml          # Named tag groups (display name + tags) for --group; data directory
+tags.example.yaml    # Example component lists per whiteboard tag; copy to tags.yaml in the data directory
+groups.example.yaml  # Example named tag groups; copy to groups.yaml in the data directory
 jbix/
   __init__.py
   config.py          # JBI config loader (24h cache)

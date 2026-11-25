@@ -1,0 +1,19 @@
+# Example tag groups. Copy to `groups.yaml` in your data directory (gitignored
+# here, as a deployment keeps its own) and edit to suit.
+#
+# Named tag groups: shortcuts for `jbix.py --group NAME`, and a page each in the
+# drift site. Each group maps to a display name and the whiteboard tags it
+# expands to. A bare list, `name: [tag, ...]`, is also accepted; the key is then
+# the label.
+perf:
+  name: Performance
+  tags: [fp, fxp, fxpe, pcf]
+genai:
+  name: GenAI
+  tags: [aife, aimodels, aiplatform, aiact, aiasst, aiaug, aidisc]
+fide:
+  name: Firefox Desktop
+  tags: [fidedi, fidefe, proton, fidefe-acq]
+deng:
+  name: Data Engineering
+  tags: [dataplatform, dataquality, fog-migration, glean-sdk-jira]
