@@ -177,7 +177,11 @@ def sync_status(
     if not status_map:
         logger.debug("[sync_status] No status_map configured for this tag, skipping")
         return
-    bug_value = bug_info["status"]
+    # As JBI's maybe_update_issue_status: a resolved bug is looked up by its
+    # resolution (FIXED, INVALID), else by its status, and a key the map lacks is
+    # skipped rather than retried with the status, so the comparison is with what
+    # JBI would have written.
+    bug_value = bug_info.get("resolution") or bug_info["status"]
     jira_value = jira_info["status"]
     mapped = status_map.get(bug_value)
     if mapped is None:

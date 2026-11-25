@@ -537,7 +537,8 @@ class TestSyncStatus:
         bug_info["resolution"] = "FIXED"
         jira_info["status"] = "Open"
         jira_info["resolution"] = None
-        sync_status(bug_info, jira_info, j, STATUS_MAP, resolution_map=RESOLUTION_MAP)
+        sync_status(bug_info, jira_info, j, {**STATUS_MAP, "FIXED": "Done"},
+                    resolution_map=RESOLUTION_MAP)
         j.transition_issue.assert_called_once_with(
             bug_info, jira_info, "Open", "Done", resolution="Fixed"
         )
@@ -565,6 +566,36 @@ class TestSyncStatus:
         bug_info["status"] = "UNKNOWN_STATUS"
         sync_status(bug_info, jira_info, j, STATUS_MAP)
         j.transition_issue.assert_not_called()
+
+    def test_a_resolved_bug_is_looked_up_by_its_resolution_first(self, bug_info, jira_info):
+        """As JBI does: an INVALID bug is Cancelled, though RESOLVED alone maps to Done."""
+        j = _make_jira()
+        bug_info["status"] = "RESOLVED"
+        bug_info["resolution"] = "INVALID"
+        jira_info["status"] = "Open"
+        sync_status(bug_info, jira_info, j, {**STATUS_MAP, "INVALID": "Cancelled"})
+        j.transition_issue.assert_called_once_with(
+            bug_info, jira_info, "Open", "Cancelled", resolution=None
+        )
+
+    def test_a_resolution_the_map_lacks_is_skipped_not_looked_up_by_status(self, bug_info, jira_info):
+        """JBI does not fall back to the status, so neither does the comparison."""
+        j = _make_jira()
+        bug_info["status"] = "RESOLVED"
+        bug_info["resolution"] = "WORKSFORME"
+        jira_info["status"] = "Open"
+        sync_status(bug_info, jira_info, j, STATUS_MAP)
+        j.transition_issue.assert_not_called()
+
+    def test_an_unresolved_bug_is_looked_up_by_its_status(self, bug_info, jira_info):
+        j = _make_jira()
+        bug_info["status"] = "ASSIGNED"
+        bug_info["resolution"] = ""
+        jira_info["status"] = "Open"
+        sync_status(bug_info, jira_info, j, {**STATUS_MAP, "": "Never"})
+        j.transition_issue.assert_called_once_with(
+            bug_info, jira_info, "Open", "In Progress", resolution=None
+        )
 
 
 # ---------------------------------------------------------------------------
