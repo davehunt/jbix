@@ -83,6 +83,8 @@ CONFIG_FIELDS = {
 }
 EXTENSION_FIELDS = frozenset({"time_tracking", "remote_links"})
 LINK_FIELDS = frozenset({"dependencies", "see_also", "duplicates", "regressions"})
+# Synced by steps that, on an update, add only what changed (jbi/steps.py).
+LABEL_FIELDS = frozenset({"whiteboard_labels", "keyword_labels"})
 # The value maps the config section shows, for the fields that use them.
 MAP_FIELDS = {"priority": "Priority", "severity": "Severity", "status": "Status",
               "resolution": "Resolution", "type": "Issue type"}
@@ -630,16 +632,82 @@ def _map_row(label: str, entry: dict) -> str:
     return f'<dt>{e(label)}{whose}</dt><dd><ul class="translations">{"".join(items)}</ul></dd>'
 
 
-def _steps(kind: str, steps: list | None, defaults_url: str | None) -> str:
-    """The tag's steps for one kind of bug, folded; or, if it sets none, a link to JBI's defaults."""
-    if steps is None:
+def _steps_table(check: dict, steps: dict, defaults_url: str | None) -> str:
+    """JBI's steps for a new and an existing bug side by side, folded.
+
+    Grouped by the field each step syncs, in the order fields are listed above,
+    then the steps that sync no field, so a step on one side only sits beside
+    its field. A row whose field is synced on one side only is marked. A kind the
+    tag leaves to JBI's defaults links to them, as they are not copied here.
+    """
+    rows = check.get("rows") or []
+    if not rows and steps.get("new") is None and steps.get("existing") is None:
         defaults = new_tab(defaults_url, "JBI's defaults")
-        return (f'<p class="steps-default muted">JBI\'s steps for {kind}: not set for this tag, so '
-                f'{defaults} apply.</p>')
-    if not steps:
-        return f'<p class="steps-default muted">JBI\'s steps for {kind}: none.</p>'
-    return (f'<details class="history"><summary>JBI\'s steps for {kind}</summary>'
-            f'<ul class="codes">{_codes(steps)}</ul></details>')
+        return (f'<p class="steps-default muted">JBI\'s steps: not set for this tag, so '
+                f'{defaults} apply to new and existing bugs.</p>')
+    flagged = set(check.get("existing_only") or []) | set(check.get("new_only") or [])
+    order = {f: i for i, f in enumerate(CONFIG_FIELDS)}
+    rows = sorted(rows, key=lambda r: order.get(r["field"], len(order)) if r["field"] else len(order) + 1)
+
+    def cell(value) -> str:
+        if value is None:
+            return '<td class="muted">default</td>'
+        return '<td>✓</td>' if value else '<td class="muted">–</td>'
+
+    body = []
+    for r in rows:
+        field = r["field"]
+        mismatch = field in flagged
+        syncs = e(CONFIG_FIELDS.get(field, field)) if field else ""
+        body.append('<tr class="mismatch">' if mismatch else "<tr>")
+        # A field create_issue sets is not missing for a new bug, so say how it is set.
+        new = (f'<td class="muted">by <code>{e(r["new_via"])}</code></td>' if r.get("new_via")
+               else cell(r["new"]))
+        body.append(f'<td><code>{e(r["step"])}</code></td>'
+                    f'<td>{syncs}{" " + WARN_ICON if mismatch else ""}</td>'
+                    f'{new}{cell(r["existing"])}</tr>')
+    body = "".join(body)
+    unset = [key for key in ("new", "existing") if steps.get(key) is None]
+    defaults = new_tab(defaults_url, "JBI's defaults")
+    note = (f'<p class="table-note muted">Not set for {" or ".join(unset)} bugs, so {defaults} '
+            'apply there, and steps synced on one side only cannot be found.</p>' if unset else "")
+    return ('<details class="history"><summary>JBI\'s steps, for new and existing bugs</summary>'
+            '<div class="table-wrap"><table class="steps"><thead><tr><th scope="col">Step</th>'
+            '<th scope="col">Syncs</th><th scope="col">New bug</th><th scope="col">Existing bug</th>'
+            f'</tr></thead><tbody>{body}</tbody></table></div>{note}</details>')
+
+
+def _mismatch_callout(check: dict, compared: set) -> str:
+    """Fields synced for new bugs or existing bugs but not both, and the drift that follows."""
+    items = []
+    existing_only = check.get("existing_only") or []
+    # Labels and other fields drift differently, so each gets its own explanation.
+    if labels := [f for f in existing_only if f in LABEL_FIELDS]:
+        items.append(
+            f'<li><strong>Synced for existing bugs but not new ones:</strong> {e(_fields_text(labels))}. '
+            'An issue JBI creates starts without these labels, and the label steps only add what changes '
+            'afterwards, so they stay missing and every new issue drifts.</li>')
+    if others := [f for f in existing_only if f not in LABEL_FIELDS]:
+        one = len(others) == 1
+        items.append(
+            f'<li><strong>Synced for existing bugs but not new ones:</strong> {e(_fields_text(others))}. '
+            f'An issue JBI creates starts without {"it" if one else "them"}, which shows when the bug '
+            'already has a value at that point, for example when the tag is added to an older bug. A '
+            f'later change in Bugzilla brings {"it" if one else "them"} into line.</li>')
+    if new_only := check.get("new_only"):
+        one = len(new_only) == 1
+        unseen = [f for f in new_only if f not in compared]
+        items.append(
+            f'<li><strong>Synced for new bugs but not existing ones:</strong> '
+            f'{e(_fields_text(new_only))}. {"It is" if one else "They are"} set when JBI creates the '
+            'issue, but a later change in Bugzilla is not copied to Jira.'
+            + (f' This report compares the existing-bug steps, so it does not count '
+               f'{"this" if len(unseen) == 1 else "these"} either.' if unseen else '') + '</li>')
+    if not items:
+        return ""
+    return ('<aside class="callout warn" aria-labelledby="steps-differ">'
+            f'<p class="callout-title" id="steps-differ">{WARN_ICON}New and existing bugs are synced differently</p>'
+            f'<ul class="fixes">{"".join(items)}</ul></aside>')
 
 
 def config_section(jbi: dict) -> str:
@@ -668,8 +736,10 @@ def config_section(jbi: dict) -> str:
     jbi_fields, compared = set(jbi.get("fields") or []), set(jbi.get("compared") or [])
     names = [n for n in CONFIG_FIELDS if n in jbi_fields | compared] + sorted(
         (jbi_fields | compared) - set(CONFIG_FIELDS))
+    # A field synced for new bugs only is explained in the warning above, not here.
+    new_only = set((jbi.get("step_check") or {}).get("new_only") or [])
     unsynced = [n for n in CONFIG_FIELDS
-                if n not in jbi_fields | compared and n not in EXTENSION_FIELDS]
+                if n not in jbi_fields | compared | new_only and n not in EXTENSION_FIELDS]
     notes = []
     if shown_fields := [n for n in names if n in compared]:
         notes.append(f'<li><strong>Compared:</strong> {e(_fields_text(shown_fields))}.</li>')
@@ -713,9 +783,11 @@ def config_section(jbi: dict) -> str:
                  '<dl class="mappings">' + "".join(map_row(f) for f in MAP_FIELDS)
                  + '</dl></details>' if maps else "")
     steps = jbi.get("steps") or {}
-    steps_html = "".join(_steps(f"{kind} bug", steps.get(key), source.get("defaults_url"))
-                         for key, kind in (("existing", "an existing"), ("new", "a new")))
-    return '<h2 id="config">How this was compared</h2>' + intro + callout + maps_html + steps_html
+    # A latest file recorded before steps were compared has no table to show.
+    check = jbi.get("step_check")
+    steps_html = _steps_table(check, steps, source.get("defaults_url")) if check else ""
+    return ('<h2 id="config">How this was compared</h2>' + intro
+            + (_mismatch_callout(check, compared) if check else "") + callout + maps_html + steps_html)
 
 
 def broken_table(rows: list[dict], total: int, prefix: str | None = None,

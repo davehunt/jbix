@@ -191,7 +191,7 @@ The site is plain static HTML with relative links, so it works from disk or any 
 | `groups/<group>.html` | the same for one group in `groups.yaml` |
 | `tags/<tag>.html` | one tag: its trend, which fields drift, each bug and issue out of sync, its broken links, and how it was compared |
 
-Each tag page ends with **How this was compared**: a link to the tag's lines in JBI's `config.prod.yaml` at the commit the run read, which fields JBI syncs beside which the run compared (so an override such as `--no-assignee` is visible), and the value maps and steps in effect, with JBI's defaults marked. jbix reads the config at main's current commit, found through GitHub's API; set `GITHUB_TOKEN` in CI to avoid its unauthenticated rate limit. If the lookup fails, the config is read from main and the page links to the file without line numbers.
+Each tag page ends with **How this was compared**: a link to the tag's lines in JBI's `config.prod.yaml` at the commit the run read, which fields JBI syncs beside which the run compared (so an override such as `--no-assignee` is visible), and the value maps and steps in effect, with JBI's defaults marked. JBI's steps for new and existing bugs are shown side by side, and a field synced for one kind but not the other gets a warning, as it causes drift that a sync clears only until the next issue. jbix reads the config at main's current commit, found through GitHub's API; set `GITHUB_TOKEN` in CI to avoid its unauthenticated rate limit. If the lookup fails, the config is read from main and the page links to the file without line numbers.
 
 Charts are inline SVG, and it has a light and a dark theme, following the system unless the reader picks one. Build it on its own, from any data directory:
 

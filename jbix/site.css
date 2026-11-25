@@ -335,6 +335,13 @@ dl.mappings dd { margin: 0; }
 ul.translations { margin: 0; padding: 0; list-style: none; }
 ul.translations > li { margin: 0 0 0.25rem; }
 p.steps-default { margin: 0.4rem 0 0; font-size: 0.9rem; }
+/* JBI's steps side by side: compact rows, and a field synced on one side only marked. */
+table.steps { width: auto; margin-top: 0.5rem; }
+table.steps td, table.steps th { padding: 0.25rem 0.75rem; }
+table.steps td:nth-child(3), table.steps td:nth-child(4),
+table.steps th:nth-child(3), table.steps th:nth-child(4) { text-align: center; }
+table.steps tr.mismatch td { background: color-mix(in srgb, var(--warn) 12%, transparent); }
+table.steps tr.mismatch .icon { color: var(--warn); vertical-align: -2px; }
 ul.codes { display: inline; margin: 0; padding: 0; list-style: none; }
 ul.codes li { display: inline-block; margin: 0 0.5rem 0.25rem 0; }
 details.history > ul.codes { display: block; margin: 0.5rem 0 0.25rem; }

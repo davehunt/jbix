@@ -9,6 +9,7 @@ import pytest
 
 import jbix.snapshots as snapshots
 from jbix import site
+from jbix.config import compare_steps
 
 
 def _health(pairs_total=100, linked=40):
@@ -533,7 +534,10 @@ def _jbi(**kw):
                  "type": {"value": {"defect": "Bug"}, "default": True}},
         "labels_brackets": {"value": "no", "default": True},
     }
-    return {**jbi, **kw}
+    jbi = {**jbi, **kw}
+    # As jbix.config.describe_tag records it, unless a test gives its own.
+    jbi.setdefault("step_check", compare_steps(jbi["steps"]["new"], jbi["steps"]["existing"]))
+    return jbi
 
 
 def _config_section(data_dir, tmp_path, jbi):
@@ -599,17 +603,94 @@ def test_link_excludes_are_noted_when_links_are_compared(data_dir, tmp_path):
     assert "BZFFX" not in section
 
 
-def test_steps_the_tag_sets_are_folded(data_dir, tmp_path):
-    _, section = _config_section(data_dir, tmp_path, _jbi())
-    assert "<summary>JBI's steps for an existing bug</summary>" in section
-    assert "<li><code>maybe_assign_jira_user</code></li>" in section
+# glean-sdk-jira's steps on 24 Nov 2026: labels synced for existing bugs only.
+GLEAN_STEPS = {
+    "new": ["create_issue", "maybe_delete_duplicate", "maybe_update_components", "add_link_to_bugzilla",
+            "add_link_to_jira", "maybe_assign_jira_user", "maybe_update_issue_status"],
+    "existing": ["update_issue_summary", "maybe_assign_jira_user", "maybe_update_components",
+                 "maybe_update_issue_status", "sync_keywords_labels", "sync_whiteboard_labels"],
+}
 
 
-def test_steps_the_tag_does_not_set_link_to_jbis_defaults_rather_than_copy_them(data_dir, tmp_path):
-    _, section = _config_section(data_dir, tmp_path, _jbi())
-    assert ("JBI's steps for a new bug: not set for this tag, so "
-            f'<a href="{DEFAULTS_URL}" target="_blank" rel="noopener">JBI&#x27;s defaults</a> apply.') in section
-    assert "steps for a new bug</summary>" not in section
+def _steps_rows(section):
+    table = section[section.index('<table class="steps">'):]
+    return re.findall(r"<tr(?: class=\"(\w+)\")?><td><code>([\w_]+)</code>", table[:table.index("</table>")])
+
+
+def test_steps_are_side_by_side_grouped_by_the_field_they_sync(data_dir, tmp_path):
+    _, section = _config_section(data_dir, tmp_path, _jbi(steps=GLEAN_STEPS,
+                                                          compared=["components", "keyword_labels",
+                                                                    "status", "summary", "whiteboard_labels"]))
+    assert "<summary>JBI's steps, for new and existing bugs</summary>" in section
+    rows = _steps_rows(section)
+    # In the order fields are listed, then the steps that sync no field.
+    assert [step for _, step in rows] == [
+        "update_issue_summary", "maybe_assign_jira_user", "maybe_update_components",
+        "sync_whiteboard_labels", "sync_keywords_labels", "maybe_update_issue_status",
+        "create_issue", "maybe_delete_duplicate", "add_link_to_bugzilla", "add_link_to_jira"]
+    assert [step for cls, step in rows if cls == "mismatch"] == ["sync_whiteboard_labels", "sync_keywords_labels"]
+    assert ('<td><code>sync_whiteboard_labels</code></td><td>Whiteboard labels ' in section
+            and '<td class="muted">–</td><td>✓</td></tr>' in section)
+
+
+def test_labels_synced_for_existing_bugs_only_are_warned_about(data_dir, tmp_path):
+    _, section = _config_section(data_dir, tmp_path, _jbi(steps=GLEAN_STEPS))
+    callout = section[section.index('<aside class="callout warn" aria-labelledby="steps-differ">'):]
+    callout = callout[:callout.index("</aside>")]
+    assert "New and existing bugs are synced differently" in callout
+    assert ("<strong>Synced for existing bugs but not new ones:</strong> Whiteboard labels, "
+            "Keyword labels. An issue JBI creates starts without these labels, and the label steps only "
+            "add what changes afterwards, so they stay missing and every new issue drifts.") in callout
+    # It comes before what was compared, so it is seen first.
+    assert section.index("steps-differ") < section.index("what-was-compared")
+
+
+def test_a_non_label_field_on_existing_bugs_only_is_not_said_to_drift_on_every_issue(data_dir, tmp_path):
+    steps = {"new": ["create_issue"], "existing": ["update_issue_summary", "sync_regressions"]}
+    _, section = _config_section(data_dir, tmp_path, _jbi(steps=steps))
+    assert ("Synced for existing bugs but not new ones:</strong> Regressions. An issue JBI creates starts "
+            "without it, which shows when the bug already has a value at that point, for example when the "
+            "tag is added to an older bug. A later change in Bugzilla brings it into line.") in section
+    assert "every new issue drifts" not in section
+
+
+def test_labels_and_other_fields_on_existing_bugs_only_get_a_bullet_each(data_dir, tmp_path):
+    steps = {"new": ["create_issue"], "existing": ["sync_whiteboard_labels", "sync_regressions"]}
+    _, section = _config_section(data_dir, tmp_path, _jbi(steps=steps))
+    assert section.count("<strong>Synced for existing bugs but not new ones:</strong>") == 2
+
+
+def test_a_field_synced_for_new_bugs_only_says_later_changes_are_not_copied(data_dir, tmp_path):
+    steps = {"new": ["create_issue", "maybe_update_components"], "existing": ["update_issue_summary"]}
+    _, section = _config_section(data_dir, tmp_path, _jbi(steps=steps, compared=["summary"]))
+    assert ("<strong>Synced for new bugs but not existing ones:</strong> Components. It is set when JBI "
+            "creates the issue, but a later change in Bugzilla is not copied to Jira. This report compares "
+            "the existing-bug steps, so it does not count this either.") in section
+
+
+def test_matching_steps_raise_no_warning(data_dir, tmp_path):
+    steps = {"new": ["create_issue", "sync_whiteboard_labels"],
+             "existing": ["update_issue_summary", "sync_whiteboard_labels"]}
+    _, section = _config_section(data_dir, tmp_path, _jbi(steps=steps))
+    assert "steps-differ" not in section and 'class="mismatch"' not in section
+
+
+def test_steps_left_to_jbis_defaults_link_to_them_rather_than_copy_them(data_dir, tmp_path):
+    _, section = _config_section(data_dir, tmp_path, _jbi())  # new steps unset
+    assert '<td class="muted">default</td>' in section
+    assert ("Not set for new bugs, so "
+            f'<a href="{DEFAULTS_URL}" target="_blank" rel="noopener">JBI&#x27;s defaults</a> apply there, '
+            "and steps synced on one side only cannot be found.") in section
+    assert "steps-differ" not in section
+    _, section = _config_section(data_dir, tmp_path, _jbi(steps={"new": None, "existing": None}))
+    assert "JBI's steps: not set for this tag, so " in section and '<table class="steps">' not in section
+
+
+def test_a_latest_file_from_before_steps_were_compared_shows_no_table(data_dir, tmp_path):
+    jbi = _jbi()
+    del jbi["step_check"]
+    _, section = _config_section(data_dir, tmp_path, jbi)
+    assert '<table class="steps">' not in section and "steps-differ" not in section
 
 
 def test_without_a_commit_the_config_is_said_to_be_from_main(data_dir, tmp_path):
@@ -632,3 +713,16 @@ def test_a_latest_file_without_config_detail_has_no_section(data_dir, tmp_path):
     assert 'id="config"' not in doc and 'href="#config"' not in doc
     fixing = doc[doc.index('<h2 id="fixing">'):doc.index('<h2 id="broken">')]
     assert f'<a href="{site.JBI_URL}" target="_blank" rel="noopener">JBI&#x27;s configuration</a>' in fixing
+
+
+def test_a_field_create_issue_sets_is_not_shown_as_missing_for_a_new_bug(data_dir, tmp_path):
+    _, section = _config_section(data_dir, tmp_path, _jbi(steps=GLEAN_STEPS))
+    assert ('<td><code>update_issue_summary</code></td><td>Summary</td>'
+            '<td class="muted">by <code>create_issue</code></td><td>✓</td>') in section
+
+
+def test_a_field_synced_for_new_bugs_only_is_not_also_listed_as_not_synced(data_dir, tmp_path):
+    steps = {"new": ["create_issue", "maybe_update_components"], "existing": ["update_issue_summary"]}
+    _, section = _config_section(data_dir, tmp_path, _jbi(steps=steps, compared=["summary"]))
+    unsynced = section[section.index("Not compared, as JBI does not sync them"):]
+    assert "Components" not in unsynced[:unsynced.index("</li>")]
