@@ -51,6 +51,7 @@ from jbix.bugzilla import (
 from jbix.config import CACHE_PATH as JBI_CONFIG_CACHE
 from jbix.config import (
     all_tags,
+    describe_tag,
     get_enabled_flags,
     get_jira_project,
     get_linked_project_excludes,
@@ -300,6 +301,16 @@ def effective_flags(tag: str, args: argparse.Namespace) -> set[str]:
             enabled.add(flag)
 
     return enabled
+
+
+def _jbi_detail(tag: str, enabled: set[str]) -> dict:
+    """JBI's config for ``tag`` and the fields this run compared, for the drift report.
+
+    The two differ when a run overrides JBI, as the daily report's ``--no-assignee``
+    does, and the report says so rather than leave readers to assume the config's
+    fields were all compared.
+    """
+    return {**describe_tag(tag), "compared": sorted(enabled)}
 
 
 # ---------------------------------------------------------------------------
@@ -1523,7 +1534,7 @@ def main() -> None:
             write_broken_links_csv(tag, broken_links)
             if should_record:
                 record_snapshot(tag, jira_project, health_metrics, diff_metrics, run_ts,
-                                broken_links=broken_links)
+                                broken_links=broken_links, jbi=_jbi_detail(tag, enabled))
                 captured = True
             per_tag_metrics.append({
                 "jira_project": jira_project,
@@ -1561,7 +1572,7 @@ def main() -> None:
                     tag=tag, jira_issues=jira_issues, bugz=bugz, orphan_cache=orphan_bugs,
                 )
                 record_snapshot(tag, jira_project, health_metrics, diff_metrics, run_ts,
-                                broken_links=broken_links)
+                                broken_links=broken_links, jbi=_jbi_detail(tag, enabled))
                 captured = True
             all_updates.extend(bugz.updates)
             all_updates.extend(jira.updates)

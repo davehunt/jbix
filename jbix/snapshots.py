@@ -101,6 +101,7 @@ def record_snapshot(
     diff_metrics: dict | None,
     ts: datetime,
     broken_links: list | None = None,
+    jbi: dict | None = None,
 ) -> pathlib.Path:
     """Append ``tag``'s history line and rewrite its latest file; return the history path.
 
@@ -108,6 +109,9 @@ def record_snapshot(
     ``run_health_check`` / ``run_diff_check`` (or the silent ``compute_*``
     variants) in ``jbix.health``. ``broken_links`` is the list from
     ``find_broken_links``: counted in the history, listed in the latest file.
+    ``jbi`` is how the run compared the tag (``jbix.config.describe_tag`` plus the
+    fields compared), kept in the latest file only: it changes rarely, and the
+    history is what is committed.
     """
     stamp = ts.isoformat(timespec="seconds")
     bz, jr = health_metrics.get("bugzilla"), health_metrics.get("jira")
@@ -129,6 +133,8 @@ def record_snapshot(
         "broken_links": broken[:_BROKEN_LINKS_CAP],
         "broken_links_total": len(broken),
     }
+    if jbi:
+        latest["jbi"] = jbi
     path = _path(tag)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as fh:

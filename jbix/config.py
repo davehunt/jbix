@@ -22,7 +22,9 @@ Step → sync flag mapping:
 """
 
 import logging
+import os
 import pathlib
+import re
 import time
 import urllib.request
 
@@ -38,12 +40,18 @@ from jbix.constants import (
 
 logger = logging.getLogger(__name__)
 
-SOURCE_URL = (
-    "https://raw.githubusercontent.com/mozilla/jira-bugzilla-integration"
-    "/main/config/config.prod.yaml"
-)
+JBI_REPO = "mozilla/jira-bugzilla-integration"
+CONFIG_FILE = "config/config.prod.yaml"
+SOURCE_URL = f"https://raw.githubusercontent.com/{JBI_REPO}/main/{CONFIG_FILE}"
+# The commit at the tip of main, as a bare sha (the ``.sha`` media type), so the
+# config can be read at that commit and the report can link to the lines it used.
+COMMIT_URL = f"https://api.github.com/repos/{JBI_REPO}/commits/main"
 CACHE_PATH = pathlib.Path("cache") / "jbi_config.yaml"
 CACHE_TTL_SECONDS = 24 * 60 * 60  # 24 hours
+
+# What the last get_config() read: the raw text and the commit it came from (None
+# when unknown), for describe_tag()'s line numbers and permalink.
+_loaded: dict = {"raw": None, "commit": None}
 
 # Maps JBI step names to the sync flag names used in jbix.py
 STEP_TO_FLAG: dict[str, str] = {
@@ -64,11 +72,43 @@ STEP_TO_FLAG: dict[str, str] = {
 }
 
 
-def _fetch_raw() -> str:
-    """Download the raw YAML config from GitHub."""
-    logger.debug(f"Fetching JBI config from {SOURCE_URL}")
-    with urllib.request.urlopen(SOURCE_URL, timeout=30) as resp:
+def _fetch_commit() -> str | None:
+    """The sha at the tip of JBI's main branch, or None if GitHub will not say.
+
+    Unauthenticated, GitHub's API allows 60 requests an hour per address, which a
+    shared CI runner can exhaust, so ``GITHUB_TOKEN`` is sent when set. Failing
+    only costs the permalink: the config is then read from main.
+    """
+    req = urllib.request.Request(COMMIT_URL, headers={"Accept": "application/vnd.github.sha"})
+    if token := os.getenv("GITHUB_TOKEN"):
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            sha = resp.read().decode("ascii").strip()
+    except (OSError, UnicodeDecodeError) as e:
+        logger.warning(f"JBI config: could not find main's commit ({e}); reading main")
+        return None
+    return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else None
+
+
+def _fetch_raw(commit: str | None = None) -> str:
+    """Download the raw YAML config from GitHub, at ``commit`` if given, else main."""
+    url = (f"https://raw.githubusercontent.com/{JBI_REPO}/{commit}/{CONFIG_FILE}"
+           if commit else SOURCE_URL)
+    logger.debug(f"Fetching JBI config from {url}")
+    with urllib.request.urlopen(url, timeout=30) as resp:
         return resp.read().decode("utf-8")
+
+
+def _commit_path() -> pathlib.Path:
+    """Beside the cached config: the commit it was read at."""
+    return CACHE_PATH.with_suffix(".commit")
+
+
+def _cached_commit() -> str | None:
+    path = _commit_path()
+    sha = path.read_text().strip() if path.is_file() else ""
+    return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else None
 
 
 def _is_cache_fresh() -> bool:
@@ -82,32 +122,36 @@ def _load_from_cache() -> str:
     return CACHE_PATH.read_text(encoding="utf-8")
 
 
-def _save_to_cache(content: str) -> None:
+def _save_to_cache(content: str, commit: str | None = None) -> None:
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     CACHE_PATH.write_text(content, encoding="utf-8")
+    # Always rewritten, so a config read from main never keeps an older commit.
+    _commit_path().write_text(commit or "", encoding="utf-8")
 
 
 def get_config() -> list[dict]:
     """Return the full parsed JBI config, using cache when fresh."""
     if _is_cache_fresh():
         logger.debug("Loading JBI config from cache")
-        raw = _load_from_cache()
+        raw, commit = _load_from_cache(), _cached_commit()
     else:
         try:
-            raw = _fetch_raw()
-            _save_to_cache(raw)
-            logger.info("JBI config: fetched from GitHub")
+            commit = _fetch_commit()
+            raw = _fetch_raw(commit)
+            _save_to_cache(raw, commit)
+            logger.info(f"JBI config: fetched from GitHub at {commit[:12] if commit else 'main'}")
         except OSError as e:
             # Network failure: fall back to a stale cache if one exists.
             if CACHE_PATH.exists():
                 logger.warning(f"JBI config fetch failed ({e}); using stale cache")
-                raw = _load_from_cache()
+                raw, commit = _load_from_cache(), _cached_commit()
             else:
                 raise
 
     entries = yaml.safe_load(raw)
     if not isinstance(entries, list):
         raise ValueError("Unexpected JBI config format: expected a YAML list")
+    _loaded.update(raw=raw, commit=commit)
     return entries
 
 
@@ -201,4 +245,92 @@ def get_mappings(whiteboard_tag: str) -> dict:
         "issue_type_map": params.get("issue_type_map", DEFAULT_ISSUE_TYPE_MAP),
         "labels_brackets": params.get("labels_brackets", "no"),
         "jira_components": jira_components,
+    }
+
+
+# Where JBI defines the steps a tag gets when it sets none. Linked rather than
+# copied, so the report never shows a stale copy of JBI's defaults.
+MODELS_FILE = "jbi/models.py"
+# The kinds of steps the report lists: for a bug JBI already has an issue for,
+# and for one it creates an issue for.
+STEP_KINDS = ("existing", "new")
+
+# The maps a tag can set, by the field they translate, in the order the report lists them.
+_MAPS = {
+    "priority": "priority_map",
+    "severity": "severity_map",
+    "status": "status_map",
+    "resolution": "resolution_map",
+    "type": "issue_type_map",
+}
+
+
+def _tag_lines(raw: str, whiteboard_tag: str) -> tuple[int, int] | None:
+    """The 1-based first and last lines of the tag's entry in the raw config.
+
+    An entry runs from its ``- `` at column 0 to the line before the next one,
+    less any blank lines and column-0 comments that belong to what follows.
+    """
+    lines = raw.splitlines()
+    pattern = re.compile(rf"^-?\s*whiteboard_tag:\s*['\"]?{re.escape(whiteboard_tag)}['\"]?\s*(#.*)?$")
+    found = next((i for i, line in enumerate(lines) if pattern.match(line)), None)
+    if found is None:
+        return None
+    start = next((i for i in range(found, -1, -1) if lines[i].startswith("- ")), found)
+    end = next((i for i in range(found + 1, len(lines)) if lines[i].startswith("- ")), len(lines))
+    end -= 1
+    while end > found and (not lines[end].strip() or lines[end].startswith("#")):
+        end -= 1
+    return start + 1, end + 1
+
+
+def _plain(value):
+    """A YAML value as something JSON can hold, with every mapping key a string."""
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+def describe_tag(whiteboard_tag: str) -> dict:
+    """What JBI's config says about a tag, as the drift report shows it.
+
+    Each map and list says whether the tag sets it or JBI's default applies, since
+    a reader asking "why does this field drift" usually needs to know which. The
+    source names the commit the config was read at and links to the tag's lines
+    there, so the link keeps pointing at what this run used after JBI changes.
+    """
+    entry = get_tag_config(whiteboard_tag) or {}
+    params = entry.get("parameters") or {}
+    commit = _loaded["commit"]
+    lines = _tag_lines(_loaded["raw"], whiteboard_tag) if _loaded["raw"] else None
+    if commit:
+        url = f"https://github.com/{JBI_REPO}/blob/{commit}/{CONFIG_FILE}"
+        if lines:
+            url += f"#L{lines[0]}-L{lines[1]}"
+    else:
+        # Line numbers on main would drift as JBI changes, so link the file alone.
+        url = f"https://github.com/{JBI_REPO}/blob/main/{CONFIG_FILE}"
+    mappings = get_mappings(whiteboard_tag)
+    set_steps = params.get("steps") or {}
+    # A kind the tag does not set is None: JBI's default applies, linked to, not copied.
+    steps = {kind: _plain(set_steps[kind]) if kind in set_steps else None for kind in STEP_KINDS}
+    return {
+        "description": entry.get("description"),
+        "source": {"commit": commit, "url": url, "lines": list(lines) if lines and commit else None,
+                   "defaults_url": f"https://github.com/{JBI_REPO}/blob/{commit or 'main'}/{MODELS_FILE}"},
+        "steps": steps,
+        "fields": sorted(get_enabled_flags(whiteboard_tag)),
+        "linked_project_excludes": {
+            "value": get_linked_project_excludes(whiteboard_tag),
+            "default": "linked_project_excludes" not in params,
+        },
+        "maps": {
+            field: {"value": _plain(mappings[key]), "default": key not in params}
+            for field, key in _MAPS.items()
+        },
+        "labels_brackets": {"value": mappings["labels_brackets"], "default": "labels_brackets" not in params},
     }
