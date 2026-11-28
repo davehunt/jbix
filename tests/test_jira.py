@@ -544,6 +544,9 @@ class TestApiUrl:
         import jbix.jira as jira_mod
         monkeypatch.delenv("JIRA_API_URL", raising=False)
         monkeypatch.setenv("JIRA_URL", "https://example.atlassian.net")
+        # A reload makes new classes, which code imported earlier (jbix.py's
+        # `except QuietEditRefused`) would not recognise, so put the originals back.
+        classes = {name: getattr(jira_mod, name) for name in ("JiraClient", "QuietEditRefused")}
         try:
             importlib.reload(jira_mod)
             assert jira_mod.JIRA_API_URL == "https://example.atlassian.net"
@@ -551,3 +554,52 @@ class TestApiUrl:
         finally:
             monkeypatch.undo()
             importlib.reload(jira_mod)
+            for name, cls in classes.items():
+                setattr(jira_mod, name, cls)
+
+
+# ---------------------------------------------------------------------------
+# Quiet edits: Jira allows them only to project admins
+# ---------------------------------------------------------------------------
+
+from jira.exceptions import JIRAError  # noqa: E402
+
+from jbix.jira import QuietEditRefused  # noqa: E402
+
+_REFUSED = "To discard the user notification either admin or project admin permissions are required."
+
+
+class TestQuietEdits:
+    def test_edits_are_quiet_by_default(self):
+        j = make_jira()
+        issue = MagicMock()
+        j._edit(issue, "FXP-1", {"priority": {"name": "P1"}})
+        issue.update.assert_called_once_with(fields={"priority": {"name": "P1"}}, notify=False)
+
+    def test_notify_sends_the_edit_with_notifications(self):
+        j = make_jira()
+        j.notify = True
+        issue = MagicMock()
+        j._edit(issue, "FXP-1", {"labels": ["a"]})
+        issue.update.assert_called_once_with(fields={"labels": ["a"]}, notify=True)
+
+    def test_a_refused_quiet_edit_names_the_issue_and_project(self):
+        j = make_jira()
+        issue = MagicMock()
+        issue.update.side_effect = JIRAError(status_code=403, text=_REFUSED)
+        with pytest.raises(QuietEditRefused) as refused:
+            j._edit(issue, "DENG-1234", {"labels": ["a"]})
+        assert (refused.value.key, refused.value.project) == ("DENG-1234", "DENG")
+
+    def test_any_other_403_is_raised_as_it_is(self):
+        j = make_jira()
+        issue = MagicMock()
+        issue.update.side_effect = JIRAError(status_code=403, text="You do not have permission to edit")
+        with pytest.raises(JIRAError):
+            j._edit(issue, "DENG-1", {"labels": ["a"]})
+
+    def test_field_updates_go_through_the_quiet_edit(self):
+        j = make_jira()
+        j.notify = True
+        j._update("FXP-1", "labels", ["a"])
+        j.client.issue.return_value.update.assert_called_once_with(fields={"labels": ["a"]}, notify=True)

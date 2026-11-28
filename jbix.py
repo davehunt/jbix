@@ -67,7 +67,7 @@ from jbix.health import (
     run_diff_check,
     run_health_check,
 )
-from jbix.jira import JiraClient
+from jbix.jira import JiraClient, QuietEditRefused
 from jbix.people import PeopleClient
 from jbix.snapshots import has_snapshot, record_snapshot
 
@@ -237,6 +237,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--remote-links", action="store_true", default=False,
         help="Ensure each Jira issue has a remote link back to its Bugzilla bug (extension: not managed by JBI)",
+    )
+    parser.add_argument(
+        "--notify", action="store_true", default=False,
+        help="Notify issue watchers of field edits in prompt and apply modes. Edits are quiet by "
+             "default, which Jira allows only project admins; agree this with the project's "
+             "owners first. Status changes and new links always notify",
     )
 
     # Direction
@@ -1411,6 +1417,7 @@ def main() -> None:
     is_check = args.mode == "check"
     bugz = BugzillaClient(mode="preview" if is_check else args.mode)
     jira = JiraClient(mode="preview" if is_check else args.mode)
+    jira.notify = args.notify
     people = PeopleClient(token) if (token := os.getenv("PEOPLE_API_TOKEN")) else None
     if people:
         logger.info("People directory lookup enabled")
@@ -1421,6 +1428,7 @@ def main() -> None:
     per_tag_metrics: list[dict] = []
     run_ts = datetime.now()       # shared by every snapshot recorded this run
     captured = False              # True once any tag records a snapshot
+    refused = None                # QuietEditRefused, if Jira stopped a quiet edit
     # Shared across tags so a renamed key is resolved (and missing keys recorded) only
     # once, and seeded from earlier runs (load_key_moves) so it is not resolved daily.
     resolved_key_cache, key_checked = load_key_moves()
@@ -1554,6 +1562,10 @@ def main() -> None:
             else:
                 run_forward_sync(bugzilla_bugs, enabled, mappings, jira_project, bugz, jira,
                                  project_components=project_components, people=people)
+        except QuietEditRefused as e:
+            # Stop syncing, but let the rest of the run finish: the snapshot, the
+            # caches and the audit trail of what was already changed.
+            refused = e
         finally:
             # Record a snapshot for forward runs (apply/prompt/preview). The updates
             # gathered above are the pre-apply drift; capture before they are cleared.
@@ -1586,6 +1598,8 @@ def main() -> None:
             jira.updates = []
             bugz.applied = False
             jira.applied = False
+        if refused:
+            break
 
     save_orphan_bugs(orphan_bugs, orphan_checked)
     saved = save_key_moves(resolved_key_cache, key_checked)
@@ -1606,6 +1620,25 @@ def main() -> None:
 
         out = build_site(DEFAULT_OUT)
         print(f"\n{Colors.CYAN}→ Built the drift site: {out / 'index.html'}{Colors.RESET}")
+
+    if refused:
+        print(quiet_edit_refused_message(refused), file=sys.stderr)
+        sys.exit(2)
+
+
+def quiet_edit_refused_message(e: QuietEditRefused) -> str:
+    """What to do when Jira will not let this user edit a project's issues quietly."""
+    return (
+        f"\n{Colors.YELLOW}Stopped: Jira refused to edit {e.key} without notifying its watchers."
+        f"{Colors.RESET}\n"
+        f"Quiet edits need the Administer Projects permission on {e.project}, which you don't have.\n"
+        f"The change to {e.key} was not made, and no later tags were synced. Changes made before\n"
+        f"it were, and output/updates.csv lists every change this run proposed.\n\n"
+        f"To carry on, either:\n"
+        f"  - ask a {e.project} project admin to run this, or to give you that permission, or\n"
+        f"  - rerun with --notify, which emails each issue's watchers about every edit.\n"
+        f"    Agree that with {e.project}'s owners first."
+    )
 
 
 if __name__ == "__main__":

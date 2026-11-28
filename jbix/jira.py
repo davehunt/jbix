@@ -22,6 +22,23 @@ JIRA_API_URL = os.getenv("JIRA_API_URL") or JIRA_URL
 JIRA_API_USER = os.getenv("JIRA_API_USER")
 JIRA_API_KEY = os.getenv("JIRA_API_KEY")
 
+# Part of Jira's 403 when an edit asks not to notify watchers and the caller may
+# not: that needs the Administer Projects permission on the issue's project.
+_QUIET_EDIT_REFUSED = "discard the user notification"
+
+
+class QuietEditRefused(Exception):
+    """Jira refused to edit an issue without notifying its watchers.
+
+    Only a project admin (or Jira admin) may edit quietly, so the run stops here
+    rather than notify anyone unasked: see ``--notify`` in jbix.py.
+    """
+
+    def __init__(self, key: str):
+        self.key = key
+        self.project = key.rsplit("-", 1)[0]
+        super().__init__(f"Jira refused to edit {key} without notifying its watchers")
+
 
 class JiraClient:
     """
@@ -31,9 +48,12 @@ class JiraClient:
     modes are respected.
     """
 
-    def __init__(self, mode: str = "preview"):
+    def __init__(self, mode: str = "preview", notify: bool = False):
         self.client = JIRA(JIRA_API_URL, basic_auth=(JIRA_API_USER, JIRA_API_KEY))
         self.mode = mode
+        # Field edits are quiet unless asked otherwise, which Jira allows only a
+        # project admin; see _edit. Transitions and new links always notify.
+        self.notify = notify
         self.updates: list[dict] = []
         self.applied: bool = False
         self.users: dict = {}
@@ -115,10 +135,24 @@ class JiraClient:
             return False
         raise SystemExit("Aborted by user")
 
+    def _edit(self, issue, key: str, fields: dict) -> None:
+        """Edit an issue's fields, quietly unless ``notify`` is set.
+
+        Jira refuses a quiet edit from anyone who cannot administer the project,
+        which becomes QuietEditRefused, so the run can stop and say what to do
+        rather than fail with a traceback or notify watchers unasked.
+        """
+        try:
+            issue.update(fields=fields, notify=self.notify)
+        except JIRAError as e:
+            if e.status_code == 403 and _QUIET_EDIT_REFUSED in (e.text or ""):
+                raise QuietEditRefused(key) from e
+            raise
+
     def _update(self, key: str, field: str, value) -> None:
         logger.debug(f"[_update] key:{key} field:{field} value:{value}")
         if self._confirm():
-            self.client.issue(key).update(fields={field: value}, notify=False)
+            self._edit(self.client.issue(key), key, {field: value})
 
     def add_labels(self, bug: dict, jira: dict, current: list, new: list) -> None:
         value = current + new
@@ -226,7 +260,7 @@ class JiraClient:
                             f"for {jira['key']}; transitioning without it then setting separately"
                         )
                         self.client.transition_issue(issue, transition=target["id"], fields={})
-                        issue.update(fields={"resolution": {"name": resolution}}, notify=False)
+                        self._edit(issue, jira["key"], {"resolution": {"name": resolution}})
                     else:
                         raise
 
@@ -274,4 +308,4 @@ class JiraClient:
         )
         if self._confirm():
             issue = self.client.issue(jira["key"])
-            issue.update(fields={"timetracking": {"originalEstimate": f"{new}h"}}, notify=False)
+            self._edit(issue, jira["key"], {"timetracking": {"originalEstimate": f"{new}h"}})

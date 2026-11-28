@@ -93,6 +93,8 @@ class World:
         self.project_fetches: list[str] = []
         self.single_lookups: list[str] = []
         self.updated: list[tuple[str, dict]] = []
+        self.notified: list[bool] = []    # each edit's notify flag
+        self.refuse_quiet = False         # as Jira does for a user who is not a project admin
         self.bugzilla = None
         self.jira = None
 
@@ -155,7 +157,15 @@ class World:
             if current not in known:
                 raise JIRAError(status_code=404, text="Issue does not exist")
             found = SimpleNamespace(key=current)
-            found.update = lambda fields=None, **kw: self.updated.append((current, fields))
+
+            def update(fields=None, notify=True):
+                if self.refuse_quiet and not notify:
+                    raise JIRAError(status_code=403, text="To discard the user notification either "
+                                    "admin or project admin permissions are required.")
+                self.updated.append((current, fields))
+                self.notified.append(notify)
+
+            found.update = update
             return found
 
         client.search_issues.side_effect = search_issues
@@ -352,3 +362,34 @@ def test_the_latest_file_says_how_the_tag_was_compared(world, monkeypatch):
     assert jbi["compared"] == ["priority", "see_also", "summary"]
     assert jbi["maps"]["priority"]["default"] is True
     assert "jbi" not in history(world, "fxp")[0]
+
+
+# -- quiet edits ----------------------------------------------------------------------
+
+def test_field_edits_are_quiet_by_default(world, monkeypatch):
+    monkeypatch.setattr(jbix_main, "BUGZILLA_API_KEY", "a-key")
+    run(monkeypatch, "--tags", "fxp", "--mode", "apply", "--no-site")
+    assert world.notified == [False]
+
+
+def test_a_refused_quiet_edit_stops_the_run_and_says_what_to_do(world, monkeypatch, capsys):
+    monkeypatch.setattr(jbix_main, "BUGZILLA_API_KEY", "a-key")
+    world.refuse_quiet = True
+    with pytest.raises(SystemExit) as exit_:
+        run(monkeypatch, "--tags", "fxp", "perf", "--mode", "apply", "--no-site")
+    assert exit_.value.code == 2
+    err = capsys.readouterr().err
+    assert "Jira refused to edit FXP-2 without notifying its watchers" in err
+    assert "Administer Projects permission on FXP" in err and "rerun with --notify" in err
+    assert world.updated == []
+    # The run still finishes its bookkeeping, and stops before the next tag.
+    assert pathlib.Path("output", "updates.csv").is_file()
+    assert history(world, "fxp") and not history(world, "perf")
+
+
+def test_notify_sends_field_edits_with_notifications(world, monkeypatch):
+    monkeypatch.setattr(jbix_main, "BUGZILLA_API_KEY", "a-key")
+    world.refuse_quiet = True
+    run(monkeypatch, "--tags", "fxp", "--mode", "apply", "--no-site", "--notify")
+    assert ("FXP-2", {"priority": {"name": "P2"}}) in world.updated
+    assert world.notified == [True]

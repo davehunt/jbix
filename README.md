@@ -35,6 +35,9 @@ python jbix.py --tags fxp --mode apply
 # Prompt before each change
 python jbix.py --tags fxp --mode prompt
 
+# Notify watchers of field edits, where you cannot administer the project
+python jbix.py --tags fxp --mode apply --notify
+
 # Force re-fetch (bypass 1-hour cache)
 python jbix.py --tags fxp --refresh
 
@@ -64,6 +67,8 @@ Fields auto-detected from JBI config: `summary`, `assignee`, `components`, `whit
 Extension fields (opt-in, never from JBI config): `--time-tracking`, `--remote-links`.
 
 Reverse sync (`--reverse`) supported for: `assignee`, `summary`, `priority`, `severity`, `whiteboard-labels`, `keyword-labels`, `type`.
+
+**Field edits in Jira are quiet by default**, so watchers are not emailed about each one, but Jira allows that only to someone who can administer the issue's project (the Administer Projects permission, or Jira admin). For anyone else, Jira refuses the edit, and jbix stops with a message saying so, after recording what it had already changed. Either ask a project admin to run it, or pass `--notify` to make the edits with notifications, once the project's owners agree. Status changes and new links always notify, whatever the option.
 
 ## Setup
 
