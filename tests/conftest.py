@@ -28,6 +28,7 @@ def make_jira(mode: str = "apply") -> JiraClient:
     client.applied = False
     client.users = {}
     client.handled_link_ids = set()
+    client.notify = False
     return client
 
 
